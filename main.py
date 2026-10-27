@@ -801,8 +801,49 @@ def handle_command(message):
     parts = message.split()
     command = parts[0].upper()
 
-    if command in ("說明", "HELP", "功能", "完整功能選單"):
-        return help_text(), None
+   if command in ["功能選單", "功能", "help", "Help", "HELP"]:
+    return (
+        "📈【川投顧｜功能選單】\n\n"
+        "歡迎使用川投顧！💹\n"
+        "輸入以下指令，即可查詢金融資訊。\n\n"
+        "━━━━━━━━━━━━━━\n\n"
+        "📊【1. 即時股價查詢】\n"
+        "直接輸入股票代碼即可查詢。\n"
+        "範例：\n"
+        "▪️ 2330（台積電）\n"
+        "▪️ 0050（元大台灣50）\n"
+        "▪️ AAPL（Apple）\n\n"
+        "🏦【2. 三大法人籌碼】\n"
+        "指令：籌碼 股票代碼\n"
+        "範例：籌碼 2330\n\n"
+        "💰【3. 本益比與 EPS】\n"
+        "指令：本益比 股票代碼\n"
+        "範例：本益比 2330\n\n"
+        "📉【4. 歷史區間漲跌】\n"
+        "依照期間輸入指令：\n"
+        "▪️ 當天 2330\n"
+        "▪️ 一週 2330\n"
+        "▪️ 一個月 2330\n"
+        "▪️ 三個月 2330\n"
+        "▪️ 年初至今 2330\n\n"
+        "🗓️【5. 自訂日期區間】\n"
+        "第一步：輸入「自定區間」\n"
+        "第二步：依照機器人提示輸入日期。\n"
+        "第三步：依照提示完成查詢。\n\n"
+        "🌏【6. 國際金融市場】\n"
+        "可查詢黃金、匯率及比特幣等資訊。\n"
+        "▪️ 黃金價格\n"
+        "▪️ USD/TWD（美元兌新台幣）\n"
+        "▪️ USD/JPY（美元兌日圓）\n"
+        "▪️ Bitcoin（比特幣）\n\n"
+        "━━━━━━━━━━━━━━\n"
+        "💡【使用提醒】\n"
+        "1. 請確認股票代碼是否正確。\n"
+        "2. 指令與股票代碼之間請加空格。\n"
+        "3. 自訂日期請依照機器人提示輸入。\n\n"
+        "⚠️ 本機器人提供金融資訊查詢，"
+        "不構成投資建議。"
+    )
 
     # 點擊期間選單
     if command in ("期間", "PERIOD"):
@@ -822,30 +863,35 @@ def handle_command(message):
 
         return query_period(symbol, label), None
 
-    # 自訂日期
-    if command in ("自訂期間", "自訂"):
-        if len(parts) == 2:
-            symbol = parts[1]
-            return (
-                f"請輸入起訖日期：\n"
-                f"自訂 {symbol} YYYY-MM-DD YYYY-MM-DD\n"
-                f"例如：自訂 {symbol} 2026-01-01 2026-03-31",
-                None,
-            )
+    if command in ["自訂期間", "自訂", "自定區間", "自訂區間"]:
 
-        if len(parts) == 4:
-            return (
-                query_custom_period(
-                    parts[1], parts[2], parts[3]
-                ),
-                None,
-            )
-
+    # 使用者只輸入「自定區間」
+    if len(parts) == 1:
         return (
-            "格式：自訂 2330 2026-01-01 2026-03-31",
+            "🗓️【自訂日期區間查詢】\n\n"
+            "請依照以下格式輸入股票代碼與起訖日期：\n\n"
+            "自訂 股票代碼 開始日期 結束日期\n\n"
+            "範例：\n"
+            "自訂 2330 2026-01-01 2026-03-31\n\n"
+            "日期格式請使用 YYYY-MM-DD。",
             None,
         )
 
+    # 使用者輸入股票代碼及起訖日期
+    if len(parts) == 4:
+        return (
+            query_custom_period(
+                parts[1], parts[2], parts[3]
+            ),
+            None,
+        )
+
+    return (
+        "❌ 格式錯誤！\n\n"
+        "請輸入：自訂 股票代碼 開始日期 結束日期\n\n"
+        "範例：自訂 2330 2026-01-01 2026-03-31",
+        None,
+    )
     # 本益比與 EPS
     if command in ("本益比", "估值", "EPS"):
         if len(parts) < 2:
