@@ -1,4 +1,3 @@
-
 import os
 import re
 import logging
@@ -38,9 +37,7 @@ FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "")
 COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY", "")
 ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY", "")
 
-configuration = Configuration(
-    access_token=CHANNEL_ACCESS_TOKEN
-)
+configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
 HTTP_TIMEOUT = 15
@@ -67,24 +64,13 @@ def format_number(value, digits=2):
 
         value = float(value)
 
-        if value != value:
+        if not (float("-inf") < value < float("inf")):
             return "目前無資料"
 
         return f"{value:,.{digits}f}"
 
     except (TypeError, ValueError):
         return "目前無資料"
-
-
-def get_stock_history(symbol, period="1mo"):
-    ticker = normalize_ticker(symbol)
-    stock = yf.Ticker(ticker)
-    history = stock.history(period=period, auto_adjust=False)
-
-    if history is None or history.empty:
-        return None, None
-
-    return stock, history
 
 
 def format_change(change):
@@ -103,14 +89,14 @@ def format_price_change(change):
     return "⚪ 0.00"
 
 
-def get_quick_reply():
+def get_quick_reply(symbol):
+    """將股票代碼一起放進期間按鈕，避免忘記原本查詢的股票。"""
     labels = [
         "當天",
         "一週",
         "一個月",
         "三個月",
         "年初至今",
-        "自訂期間",
     ]
 
     return QuickReply(
@@ -118,12 +104,26 @@ def get_quick_reply():
             QuickReplyItem(
                 action=MessageAction(
                     label=label,
-                    text=label
+                    text=f"{symbol} {label}"
                 )
             )
             for label in labels
         ]
     )
+
+
+def parse_int(value):
+    """將 API 回傳的數字字串轉成整數；無法解析時回傳 None。"""
+    try:
+        cleaned = str(value).replace(",", "").strip()
+
+        if cleaned in ("", "--", "-", "X", "N/A", "None"):
+            return None
+
+        return int(float(cleaned))
+
+    except (ValueError, TypeError):
+        return None
 
 
 # =========================================================
@@ -150,7 +150,7 @@ def query_stock(symbol):
         if len(history) >= 2:
             previous_close = float(history.iloc[-2]["Close"])
         else:
-            previous_close = current_price
+            previous_close = float(latest["Open"])
 
         change = current_price - previous_close
 
@@ -159,7 +159,7 @@ def query_stock(symbol):
         else:
             change_percent = 0
 
-        currency = "美元" if not ticker.endswith(".TW") else "新臺幣"
+        currency = "新臺幣" if ticker.endswith(".TW") else "原報價幣別"
 
         message = (
             f"📈【{symbol} 即時行情】\n"
@@ -173,7 +173,7 @@ def query_stock(symbol):
             "⚠️ 報價可能延遲，僅供參考。"
         )
 
-        return message, get_quick_reply()
+        return message, get_quick_reply(symbol)
 
     except Exception:
         logger.exception("query_stock failed")
@@ -189,54 +189,57 @@ def query_period(symbol, period_name):
     ticker = normalize_ticker(symbol)
 
     period_map = {
-        "當天": ("5d", "當天"),
-        "一週": ("5d", "一週"),
-        "一個月": ("1mo", "一個月"),
-        "三個月": ("3mo", "三個月"),
-        "年初至今": ("ytd", "年初至今"),
+        "當天": "5d",
+        "一週": "5d",
+        "一個月": "1mo",
+        "三個月": "3mo",
+        "年初至今": "ytd",
     }
 
     if period_name not in period_map:
         return "不支援的查詢期間。", None
 
-    period, display_name = period_map[period_name]
-
     try:
         stock = yf.Ticker(ticker)
-        if period_name == "年初至今":
-    start_date = date(datetime.now().year, 1, 1)
 
-    history = stock.history(
-        start=start_date.isoformat(),
-        end=(date.today() + timedelta(days=1)).isoformat(),
-        auto_adjust=False
-    )
-else:
-    history = stock.history(
-        period=period,
-        auto_adjust=False
-    )
+        if period_name == "年初至今":
+            start_day = date(date.today().year, 1, 1)
+            history = stock.history(
+                start=start_day.isoformat(),
+                end=(date.today() + timedelta(days=1)).isoformat(),
+                auto_adjust=False,
+            )
+        else:
+            history = stock.history(
+                period=period_map[period_name],
+                auto_adjust=False,
+            )
 
         if history is None or history.empty:
             return f"查無 {symbol} 的歷史行情。", None
 
         if period_name == "當天":
+            # 優先比較最近兩個交易日的收盤價。
             if len(history) >= 2:
-                start_price = float(history.iloc[-2]["Close"])
-                end_price = float(history.iloc[-1]["Close"])
+                start_row = history.iloc[-2]
+                end_row = history.iloc[-1]
                 start_date = history.index[-2]
+                start_price = float(start_row["Close"])
+                end_price = float(end_row["Close"])
             else:
+                start_date = history.index[-1]
                 start_price = float(history.iloc[-1]["Open"])
                 end_price = float(history.iloc[-1]["Close"])
-                start_date = history.index[-1]
+
         elif period_name == "一週":
+            start_date = history.index[0]
             start_price = float(history.iloc[0]["Close"])
             end_price = float(history.iloc[-1]["Close"])
-            start_date = history.index[0]
+
         else:
+            start_date = history.index[0]
             start_price = float(history.iloc[0]["Close"])
             end_price = float(history.iloc[-1]["Close"])
-            start_date = history.index[0]
 
         if start_price == 0:
             return "無法計算漲跌幅：起始價格為 0。", None
@@ -246,7 +249,7 @@ else:
 
         message = (
             f"📊【{symbol} 歷史漲跌幅】\n"
-            f"🗓️ 查詢期間：{display_name}\n"
+            f"🗓️ 查詢期間：{period_name}\n"
             f"📅 起始日期：{start_date.strftime('%Y-%m-%d')}\n"
             f"📅 結束日期：{history.index[-1].strftime('%Y-%m-%d')}\n"
             "------------------------------------\n"
@@ -255,7 +258,8 @@ else:
             f"📈 漲跌金額：{format_price_change(change)}\n"
             f"📉 漲跌幅：{format_change(change_percent)}\n"
             "------------------------------------\n"
-            "📌 資料來源：Yahoo Finance"
+            "📌 資料來源：Yahoo Finance\n"
+            "⚠️ 期間計算以取得的交易日資料為準。"
         )
 
         return message, None
@@ -267,7 +271,7 @@ else:
 
 # =========================================================
 # 自訂日期區間
-# 使用格式：2330 2020-01-01 2026-01-01
+# 格式：2330 2020-01-01 2026-01-01
 # =========================================================
 
 def query_custom_period(symbol, start_date, end_date):
@@ -275,13 +279,8 @@ def query_custom_period(symbol, start_date, end_date):
     ticker = normalize_ticker(symbol)
 
     try:
-        start_day = datetime.strptime(
-            start_date, "%Y-%m-%d"
-        ).date()
-
-        end_day = datetime.strptime(
-            end_date, "%Y-%m-%d"
-        ).date()
+        start_day = datetime.strptime(start_date, "%Y-%m-%d").date()
+        end_day = datetime.strptime(end_date, "%Y-%m-%d").date()
 
         if start_day >= end_day:
             return "日期錯誤：結束日期必須晚於開始日期。", None
@@ -290,11 +289,10 @@ def query_custom_period(symbol, start_date, end_date):
             return "日期錯誤：結束日期不能晚於今天。", None
 
         stock = yf.Ticker(ticker)
-
         history = stock.history(
             start=start_day.isoformat(),
             end=(end_day + timedelta(days=1)).isoformat(),
-            auto_adjust=False
+            auto_adjust=False,
         )
 
         if history is None or history.empty:
@@ -359,7 +357,7 @@ def query_valuation(symbol, query_type="PE"):
             forward_eps = info.get("forwardEps")
 
             message = (
-                f"📘【{symbol} EPS 查詢】\n"
+                f"📗【{symbol} EPS 查詢】\n"
                 f"🏢 公司名稱：{name}\n"
                 "------------------------------------\n"
                 f"📊 每股盈餘 EPS：{format_number(eps, 2)}\n"
@@ -368,7 +366,6 @@ def query_valuation(symbol, query_type="PE"):
                 "📌 資料來源：Yahoo Finance\n"
                 "⚠️ 財務資料可能延遲，僅供參考。"
             )
-
         else:
             pe = info.get("trailingPE")
             forward_pe = info.get("forwardPE")
@@ -392,7 +389,8 @@ def query_valuation(symbol, query_type="PE"):
 
 
 # =========================================================
-# 三大法人買賣超 + 融資融券
+# 外資持股比例
+# 注意：僅在 API 實際回傳相符欄位時顯示
 # =========================================================
 
 def query_foreign_shareholding(symbol):
@@ -404,9 +402,7 @@ def query_foreign_shareholding(symbol):
 
         response = requests.get(
             "https://api.finmindtrade.com/api/v4/data",
-            headers={
-                "Authorization": f"Bearer {FINMIND_TOKEN}"
-            },
+            headers={"Authorization": f"Bearer {FINMIND_TOKEN}"},
             params={
                 "dataset": "TaiwanStockShareholding",
                 "data_id": symbol,
@@ -415,10 +411,9 @@ def query_foreign_shareholding(symbol):
             },
             timeout=HTTP_TIMEOUT,
         )
-
         response.raise_for_status()
-        rows = response.json().get("data", [])
 
+        rows = response.json().get("data", [])
         if not rows:
             return None
 
@@ -426,13 +421,15 @@ def query_foreign_shareholding(symbol):
 
         shares = row.get("ForeignInvestmentShares")
         ratio = row.get("ForeignInvestmentSharesRatio")
-        data_date = row.get("date", "未知")
 
         if shares is None or ratio is None:
+            logger.info("Foreign shareholding fields unavailable for %s", symbol)
             return None
 
+        data_date = row.get("date", "未知")
+
         return (
-            f"👑 外資持股股數：{int(shares):,} 股\n"
+            f"👑 外資持股股數：{int(float(shares)):,} 股\n"
             f"👑 外資持股比例：{float(ratio):.2f}%\n"
             f"📅 外資持股資料日期：{data_date}"
         )
@@ -442,6 +439,9 @@ def query_foreign_shareholding(symbol):
         return None
 
 
+# =========================================================
+# 三大法人買賣超 + 融資融券
+# =========================================================
 
 def query_institutional(symbol):
     symbol = symbol.upper()
@@ -452,54 +452,56 @@ def query_institutional(symbol):
             "例如：籌碼 2330。"
         ), None
 
-    today = datetime.now().date()
+    today = date.today()
     match = None
     data_date = None
+    fields = []
 
     try:
-        # 往前尋找最近一筆有資料的交易日
+        # 往前尋找最近一筆有該股票資料的交易日。
         for offset in range(10):
             day = today - timedelta(days=offset)
 
             if day.weekday() >= 5:
                 continue
 
-            date_string = day.strftime("%Y%m%d")
-
             response = requests.get(
                 "https://www.twse.com.tw/rwd/zh/fund/T86",
                 params={
-                    "date": date_string,
+                    "date": day.strftime("%Y%m%d"),
                     "selectType": "ALL",
                     "response": "json",
                 },
                 timeout=HTTP_TIMEOUT,
                 headers={"User-Agent": "Mozilla/5.0"},
             )
-
-            if response.status_code != 200:
-                continue
+            response.raise_for_status()
 
             data = response.json()
-            fields = data.get("fields", [])
+            day_fields = data.get("fields", [])
             rows = data.get("data", [])
 
-            if not rows:
+            if not rows or not day_fields:
                 continue
 
-            code_index = None
-
-            for index, field in enumerate(fields):
-                if "證券代號" in field:
-                    code_index = index
-                    break
+            code_index = next(
+                (
+                    i for i, field in enumerate(day_fields)
+                    if "證券代號" in field
+                ),
+                None,
+            )
 
             if code_index is None:
                 continue
 
             for row in rows:
-                if len(row) > code_index and row[code_index].strip() == symbol:
+                if (
+                    len(row) > code_index
+                    and str(row[code_index]).strip() == symbol
+                ):
                     match = row
+                    fields = day_fields
                     data_date = day
                     break
 
@@ -509,63 +511,33 @@ def query_institutional(symbol):
         if match is None:
             return (
                 f"查無 {symbol} 最近的三大法人資料。\n"
-                "請確認是否為上市股票，或稍後再試。"
+                "請確認股票是否為上市股票，或稍後再試。"
             ), None
 
-        def parse_int(value):
-            try:
-                cleaned = str(value).replace(",", "").strip()
-                if cleaned in ("", "--", "-", "X", "N/A"):
-                    return 0
-                return int(float(cleaned))
-            except (ValueError, TypeError):
-                return 0
-
-        def find_field(fields, row, keywords):
+        def find_field(keywords):
             for index, field in enumerate(fields):
-                if all(keyword in field for keyword in keywords):
-                    if index < len(row):
-                        return parse_int(row[index])
-            return 0
+                if all(word in field for word in keywords):
+                    if index < len(match):
+                        return parse_int(match[index])
+            return None
 
-        # 重新取得當日欄位名稱
-        response = requests.get(
-            "https://www.twse.com.tw/rwd/zh/fund/T86",
-            params={
-                "date": data_date.strftime("%Y%m%d"),
-                "selectType": "ALL",
-                "response": "json",
-            },
-            timeout=HTTP_TIMEOUT,
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        data = response.json()
-        fields = data.get("fields", [])
+        # 證交所不同版本的欄位名稱可能略有差異。
+        foreign_buy = find_field(["外陸資買賣超股數"])
+        if foreign_buy is None:
+            foreign_buy = find_field(["外陸資", "買賣超股數"])
 
-        foreign_buy = find_field(
-            fields, match, ["外陸資買賣超股數"]
-        )
-        trust_net = find_field(
-            fields, match, ["投信買賣超股數"]
-        )
-        dealer_net = find_field(
-            fields, match, ["自營商買賣超股數"]
-        )
+        trust_net = find_field(["投信買賣超股數"])
+        if trust_net is None:
+            trust_net = find_field(["投信", "買賣超股數"])
 
-        # 外陸資買賣超股數在不同版本資料欄位可能不同。
-        # 如果找不到合併欄位，嘗試將兩個外資欄位相加。
-        if foreign_buy == 0:
-            foreign_net_1 = find_field(
-                fields, match, ["外資及陸資", "買賣超股數"]
-            )
-            foreign_net_2 = find_field(
-                fields, match, ["外資自營商", "買賣超股數"]
-            )
-            foreign_buy = foreign_net_1 + foreign_net_2
-
-        total_net = foreign_buy + trust_net + dealer_net
+        dealer_net = find_field(["自營商買賣超股數"])
+        if dealer_net is None:
+            dealer_net = find_field(["自營商", "買賣超股數"])
 
         def fmt_lots(shares):
+            if shares is None:
+                return "目前無資料"
+
             lots = round(shares / 1000)
 
             if lots > 0:
@@ -574,35 +546,42 @@ def query_institutional(symbol):
                 return f"🟢 賣超 {lots:,} 張"
             return "⚪ 持平 0 張"
 
-        
+        if all(value is not None for value in (
+            foreign_buy, trust_net, dealer_net
+        )):
+            total_net = foreign_buy + trust_net + dealer_net
+            total_text = fmt_lots(total_net)
+        else:
+            total_text = "目前無法完整計算"
+
         foreign_text = query_foreign_shareholding(symbol)
 
         institutional_text = (
-            f"📊【{symbol} ({symbol})】法人買賣超與籌碼\n"
+            f"📊【{symbol} 三大法人與籌碼】\n"
             f"📅 資料日期：{data_date:%Y-%m-%d}\n"
             "------------------------------------\n"
             f"🌍 外資買賣超：{fmt_lots(foreign_buy)}\n"
             f"🏦 投信買賣超：{fmt_lots(trust_net)}\n"
             f"💼 自營商買賣：{fmt_lots(dealer_net)}\n"
-            f"📈 三大法人合計：{fmt_lots(total_net)}\n"
+            f"📈 三大法人合計：{total_text}\n"
             "------------------------------------\n"
             f"{foreign_text or '👑 外資持股比例：目前無資料'}\n"
             "👔 內部大股東持股：目前無資料\n"
             "👥 本土與一般投資人：目前無資料\n"
         )
 
-
     except Exception:
         logger.exception("TWSE institutional query failed")
         return "查詢三大法人資料時發生錯誤，請稍後再試。", None
 
-    # FinMind 融資融券資料
+    # 融資融券資料
     margin_text = ""
 
     if FINMIND_TOKEN:
         try:
             margin_response = requests.get(
                 "https://api.finmindtrade.com/api/v4/data",
+                headers={"Authorization": f"Bearer {FINMIND_TOKEN}"},
                 params={
                     "dataset": "TaiwanStockMarginPurchaseShortSale",
                     "data_id": symbol,
@@ -610,37 +589,38 @@ def query_institutional(symbol):
                         data_date - timedelta(days=14)
                     ).strftime("%Y-%m-%d"),
                     "end_date": data_date.strftime("%Y-%m-%d"),
-                    "token": FINMIND_TOKEN,
                 },
                 timeout=HTTP_TIMEOUT,
             )
+            margin_response.raise_for_status()
 
-            margin_json = margin_response.json()
-            margin_rows = margin_json.get("data", [])
+            margin_rows = margin_response.json().get("data", [])
 
             if margin_rows:
-                latest = margin_rows[-1]
+                latest = max(
+                    margin_rows,
+                    key=lambda item: item.get("date", "")
+                )
 
-                margin_purchase = latest.get(
-                    "MarginPurchaseTodayBalance"
-                )
-                short_sale = latest.get(
-                    "ShortSaleTodayBalance"
-                )
+                margin_purchase = latest.get("MarginPurchaseTodayBalance")
+                short_sale = latest.get("ShortSaleTodayBalance")
 
                 margin_text = (
                     "\n📚【融資融券】\n"
                     "------------------------------------\n"
-                    f"📈 融資餘額：{format_number(margin_purchase, 0)} 張/股資料值\n"
-                    f"📉 融券餘額：{format_number(short_sale, 0)} 張/股資料值\n"
-                    "📌 數值單位請以資料來源定義為準。\n"
+                    f"📈 融資餘額：{format_number(margin_purchase, 0)}\n"
+                    f"📉 融券餘額：{format_number(short_sale, 0)}\n"
+                    f"📅 資料日期：{latest.get('date', '未知')}\n"
+                    "📌 單位依 FinMind 資料集定義，請勿直接假設為張。\n"
                 )
+            else:
+                margin_text = "\n📚【融資融券】目前查無資料。\n"
 
         except Exception:
             logger.exception("FinMind margin query failed")
-            margin_text = "\n📚 融資融券：目前無法取得資料。\n"
+            margin_text = "\n📚【融資融券】目前無法取得資料。\n"
     else:
-        margin_text = "\n📚 融資融券：尚未設定 FinMind API Token。\n"
+        margin_text = "\n📚【融資融券】尚未設定 FinMind API Token。\n"
 
     return institutional_text + margin_text, None
 
@@ -783,7 +763,8 @@ def help_text():
         "📈 即時股價\n"
         "輸入：2330、0050、AAPL\n\n"
         "📊 歷史漲跌幅\n"
-        "先輸入股票代碼，再選擇期間按鈕。\n\n"
+        "先輸入股票代碼，再按期間按鈕。\n"
+        "也可以輸入：2330 一週\n\n"
         "🗓️ 自訂日期區間\n"
         "格式：股票代碼 開始日期 結束日期\n"
         "例如：2330 2020-01-01 2026-01-01\n"
@@ -849,44 +830,20 @@ def handle_command(text):
     if command in ["USD/JPY", "USDJPY", "美金日圓"]:
         return query_fx("USD/JPY")
 
+    # 支援「2330 一週」這種期間查詢格式
+    period_names = ["當天", "一週", "一個月", "三個月", "年初至今"]
+
+    if len(parts) == 2 and parts[1] in period_names:
+        return query_period(parts[0], parts[1])
+
     # 自訂日期區間
-    # 例如：2330 2020-01-01 2026-01-01
     if (
         len(parts) == 3
         and re.fullmatch(r"[A-Za-z0-9.^=_-]+", parts[0])
         and re.fullmatch(r"\d{4}-\d{2}-\d{2}", parts[1])
         and re.fullmatch(r"\d{4}-\d{2}-\d{2}", parts[2])
     ):
-        return query_custom_period(
-            parts[0],
-            parts[1],
-            parts[2]
-        )
-
-    # 歷史期間按鈕
-    period_names = [
-        "當天",
-        "一週",
-        "一個月",
-        "三個月",
-        "年初至今",
-    ]
-
-    if command in [name.upper() for name in period_names]:
-        selected_period = next(
-            name for name in period_names
-            if name.upper() == command
-        )
-
-        # 使用者選擇期間後，必須知道要查哪一檔股票。
-        # LINE 快速回覆送出的文字只有期間名稱，
-        # 因此這裡提示使用者重新輸入代碼與期間。
-        return (
-            f"你選擇了「{selected_period}」。\n"
-            "請重新輸入股票代碼，然後選擇期間按鈕，"
-            "或直接使用自訂日期格式：\n"
-            "2330 2020-01-01 2026-01-01"
-        ), None
+        return query_custom_period(parts[0], parts[1], parts[2])
 
     # 直接輸入股票代碼
     if len(parts) == 1 and re.fullmatch(
@@ -932,13 +889,12 @@ def handle_message(event):
     try:
         reply, quick_reply = handle_command(user_text)
 
-        # 確保 LINE TextMessage 收到的是字串
         if not isinstance(reply, str):
             reply = str(reply)
 
         message = TextMessage(
             text=reply[:4500],
-            quick_reply=quick_reply
+            quick_reply=quick_reply,
         )
 
         with ApiClient(configuration) as api_client:
@@ -947,7 +903,7 @@ def handle_message(event):
             line_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
-                    messages=[message]
+                    messages=[message],
                 )
             )
 
@@ -957,11 +913,11 @@ def handle_message(event):
 
 # =========================================================
 # 本機測試
-# Render 使用 gunicorn main:app，不會執行此區塊
+# Render 使用 gunicorn main:app
 # =========================================================
 
 if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
-        port=int(os.getenv("PORT", 5000))
+        port=int(os.getenv("PORT", 5000)),
     )
