@@ -373,40 +373,108 @@ def query_custom_period(symbol, start_date, end_date):
 # 6. 本益比與 EPS
 # ==================================================
 
-def query_valuation(symbol):
-    symbol = normalize_ticker(symbol)
 
-    try:
-        info = yf.Ticker(symbol).info or {}
+def query_valuation(stock_id):
+    from datetime import datetime, timedelta
 
-        name = info.get("shortName") or info.get("longName") or symbol
-        pe = info.get("trailingPE")
-        forward_pe = info.get("forwardPE")
-        eps = info.get("trailingEps")
-        forward_eps = info.get("forwardEps")
-        currency = info.get("currency", "")
+    stock_id = stock_id.strip().upper()
+    today = datetime.now().date()
+    start_date = (today - timedelta(days=120)).isoformat()
 
-        def fmt(value):
-            if value is None:
-                return "無可用資料"
-            try:
-                return f"{float(value):,.2f}"
-            except (ValueError, TypeError):
-                return "無可用資料"
+    # 1. 查詢本益比、股價淨值比、殖利率
+    per_data = get_finmind_data(
+        "TaiwanStockPER",
+        stock_id=stock_id,
+        start_date=start_date,
+    )
 
+    # 2. 查詢財報 EPS
+    eps_data = get_finmind_data(
+        "TaiwanStockFinancialStatements",
+        stock_id=stock_id,
+        start_date=(today - timedelta(days=730)).isoformat(),
+    )
+
+    # 本益比資料取日期最新的一筆
+    per_data = sorted(
+        per_data,
+        key=lambda x: x.get("date", ""),
+        reverse=True,
+    )
+
+    latest_per = per_data[0] if per_data else {}
+
+    # 從財報中尋找 EPS 欄位
+    eps_rows = [
+        row for row in eps_data
+        if "eps" in str(row.get("type", "")).lower()
+        or "每股盈餘" in str(row.get("type", ""))
+        or "每股盈餘" in str(row.get("origin_name", ""))
+    ]
+
+    eps_rows = sorted(
+        eps_rows,
+        key=lambda x: x.get("date", ""),
+        reverse=True,
+    )
+
+    latest_eps = eps_rows[0] if eps_rows else {}
+
+    # 組合回覆
+    if not latest_per and not latest_eps:
         return (
-            f"🧮 {name}（{symbol}）估值資訊\n"
-            f"━━━━━━━━━━━━━━\n"
-            f"本益比（Trailing P/E）：{fmt(pe)}\n"
-            f"預估本益比（Forward P/E）：{fmt(forward_pe)}\n"
-            f"每股盈餘 EPS：{fmt(eps)} {currency}\n"
-            f"預估 EPS：{fmt(forward_eps)} {currency}\n\n"
-            "※ 資料可能缺漏或延遲；不同市場的會計與資料口徑可能不同。"
+            f"⚠️【{stock_id} 本益比與 EPS】\n"
+            "目前查無資料。\n\n"
+            "可能原因：\n"
+            "1. FinMind API 沒有回傳資料\n"
+            "2. 股票代號不正確\n"
+            "3. API 權限或資料更新問題\n\n"
+            "請稍後再試，或檢查 Render 日誌。"
         )
 
-    except Exception as exc:
-        logger.exception("估值查詢錯誤")
-        return f"估值查詢失敗：{type(exc).__name__}"
+    lines = [
+        f"📊【{stock_id} 本益比與 EPS】",
+        "--------------------------------",
+    ]
+
+    if latest_per:
+        lines.append(f"📅 本益比資料日期：{latest_per.get('date', '無資料')}")
+
+        per = latest_per.get("PER")
+        pbr = latest_per.get("PBR")
+        dividend_yield = latest_per.get("dividend_yield")
+
+        lines.append(
+            f"📈 本益比：{per if per not in (None, '') else '無資料'}"
+        )
+        lines.append(
+            f"📚 股價淨值比：{pbr if pbr not in (None, '') else '無資料'}"
+        )
+        lines.append(
+            f"💰 殖利率：{dividend_yield if dividend_yield not in (None, '') else '無資料'}"
+        )
+    else:
+        lines.append("📈 本益比：目前無資料")
+
+    lines.append("--------------------------------")
+
+    if latest_eps:
+        lines.append(
+            f"📅 EPS 財報日期：{latest_eps.get('date', '無資料')}"
+        )
+        lines.append(
+            f"🧾 EPS 項目：{latest_eps.get('type', latest_eps.get('origin_name', '每股盈餘'))}"
+        )
+        lines.append(
+            f"💵 EPS 數值：{latest_eps.get('value', '無資料')}（依原始資料單位）"
+        )
+    else:
+        lines.append("💵 EPS：目前無法從回傳財報中辨識")
+
+    lines.append("--------------------------------")
+    lines.append("📌 本益比與 EPS 的資料日期可能不同，請以各自日期為準。")
+
+    return "\n".join(lines)
 
 # ==================================================
 # 7、8. 完整籌碼報告：三大法人、外資持股、融資融券
