@@ -203,7 +203,19 @@ def query_period(symbol, period_name):
 
     try:
         stock = yf.Ticker(ticker)
-        history = stock.history(period=period, auto_adjust=False)
+        if period_name == "年初至今":
+    start_date = date(datetime.now().year, 1, 1)
+
+    history = stock.history(
+        start=start_date.isoformat(),
+        end=(date.today() + timedelta(days=1)).isoformat(),
+        auto_adjust=False
+    )
+else:
+    history = stock.history(
+        period=period,
+        auto_adjust=False
+    )
 
         if history is None or history.empty:
             return f"查無 {symbol} 的歷史行情。", None
@@ -383,6 +395,54 @@ def query_valuation(symbol, query_type="PE"):
 # 三大法人買賣超 + 融資融券
 # =========================================================
 
+def query_foreign_shareholding(symbol):
+    if not FINMIND_TOKEN:
+        return None
+
+    try:
+        today = date.today()
+
+        response = requests.get(
+            "https://api.finmindtrade.com/api/v4/data",
+            headers={
+                "Authorization": f"Bearer {FINMIND_TOKEN}"
+            },
+            params={
+                "dataset": "TaiwanStockShareholding",
+                "data_id": symbol,
+                "start_date": (today - timedelta(days=14)).isoformat(),
+                "end_date": today.isoformat(),
+            },
+            timeout=HTTP_TIMEOUT,
+        )
+
+        response.raise_for_status()
+        rows = response.json().get("data", [])
+
+        if not rows:
+            return None
+
+        row = max(rows, key=lambda item: item.get("date", ""))
+
+        shares = row.get("ForeignInvestmentShares")
+        ratio = row.get("ForeignInvestmentSharesRatio")
+        data_date = row.get("date", "未知")
+
+        if shares is None or ratio is None:
+            return None
+
+        return (
+            f"👑 外資持股股數：{int(shares):,} 股\n"
+            f"👑 外資持股比例：{float(ratio):.2f}%\n"
+            f"📅 外資持股資料日期：{data_date}"
+        )
+
+    except Exception:
+        logger.exception("Foreign shareholding query failed")
+        return None
+
+
+
 def query_institutional(symbol):
     symbol = symbol.upper()
 
@@ -514,6 +574,9 @@ def query_institutional(symbol):
                 return f"🟢 賣超 {lots:,} 張"
             return "⚪ 持平 0 張"
 
+        
+        foreign_text = query_foreign_shareholding(symbol)
+
         institutional_text = (
             f"📊【{symbol} ({symbol})】法人買賣超與籌碼\n"
             f"📅 資料日期：{data_date:%Y-%m-%d}\n"
@@ -523,10 +586,11 @@ def query_institutional(symbol):
             f"💼 自營商買賣：{fmt_lots(dealer_net)}\n"
             f"📈 三大法人合計：{fmt_lots(total_net)}\n"
             "------------------------------------\n"
-            "👑 外資持股比例：目前無資料\n"
+            f"{foreign_text or '👑 外資持股比例：目前無資料'}\n"
             "👔 內部大股東持股：目前無資料\n"
             "👥 本土與一般投資人：目前無資料\n"
         )
+
 
     except Exception:
         logger.exception("TWSE institutional query failed")
