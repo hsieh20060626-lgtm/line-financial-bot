@@ -408,16 +408,260 @@ def query_valuation(symbol):
         logger.exception("估值查詢錯誤")
         return f"估值查詢失敗：{type(exc).__name__}"
 
-
 # ==================================================
-# 7. 外資持股資訊（FinMind）
+# 7、8. 完整籌碼報告：三大法人、外資持股、融資融券
 # ==================================================
 
-def query_foreign_shareholding(symbol):
+def format_net_buy(net):
+    """將法人淨買賣超轉成張數顯示。"""
+    if net is None:
+        return "目前無資料"
+
+    net_lots = net / 1000
+
+    if net_lots > 0:
+        return f"🟢 買超 +{net_lots:,.0f} 張"
+    elif net_lots < 0:
+        return f"🔴 賣超 {net_lots:,.0f} 張"
+    else:
+        return "⚪ 持平 0 張"
+
+
+def to_number(value):
+    """將資料轉為數值；缺漏時回傳 None。"""
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def get_latest_row(data):
+    """取日期最新的一筆資料。"""
+    if not data:
+        return None
+
+    valid_rows = [
+        row for row in data
+        if row.get("date")
+    ]
+
+    if not valid_rows:
+        return None
+
+    return max(valid_rows, key=lambda row: str(row["date"]))
+
+
+def query_institutional(symbol):
     stock_id = symbol.strip().upper()
 
     if not stock_id.isdigit():
-        return "外資持股查詢目前僅支援台股代碼，例如：籌碼 2330。"
+        return "籌碼查詢目前僅支援台股代碼，例如：籌碼 2330。"
+
+    start_date = (date.today() - timedelta(days=30)).isoformat()
+
+    # --------------------------------------------------
+    # A. 三大法人買賣超
+    # --------------------------------------------------
+    institutional_data = get_finmind_data(
+        "TaiwanStockInstitutionalInvestorsBuySell",
+        stock_id=stock_id,
+        start_date=start_date,
+    )
+
+    institutional_date = None
+    foreign_net = None
+    trust_net = None
+    dealer_net = None
+
+    if institutional_data:
+        latest_date = max(
+            str(row.get("date", ""))
+            for row in institutional_data
+            if row.get("date")
+        )
+
+        latest_rows = [
+            row for row in institutional_data
+            if str(row.get("date", "")) == latest_date
+        ]
+
+        institutional_date = latest_date
+
+        foreign_buy = 0
+        foreign_sell = 0
+        trust_buy = 0
+        trust_sell = 0
+        dealer_buy = 0
+        dealer_sell = 0
+
+        has_foreign = False
+        has_trust = False
+        has_dealer = False
+
+        for row in latest_rows:
+            name = str(row.get("name", ""))
+            buy = to_number(row.get("buy"))
+            sell = to_number(row.get("sell"))
+
+            if buy is None or sell is None:
+                continue
+
+            if name == "Foreign_Investor":
+                foreign_buy += buy
+                foreign_sell += sell
+                has_foreign = True
+
+            elif name == "Foreign_Dealer_Self":
+                # 外資自營商屬外資相關分類，不重複計入一般外資欄位
+                pass
+
+            elif name == "Investment_Trust":
+                trust_buy += buy
+                trust_sell += sell
+                has_trust = True
+
+            elif name in (
+                "Dealer",
+                "Dealer_self",
+                "Dealer_Hedging",
+            ):
+                dealer_buy += buy
+                dealer_sell += sell
+                has_dealer = True
+
+        if has_foreign:
+            foreign_net = foreign_buy - foreign_sell
+
+        if has_trust:
+            trust_net = trust_buy - trust_sell
+
+        if has_dealer:
+            dealer_net = dealer_buy - dealer_sell
+
+    total_net = None
+
+    if any(value is not None for value in (
+        foreign_net, trust_net, dealer_net
+    )):
+        total_net = sum(
+            value for value in (
+                foreign_net, trust_net, dealer_net
+            )
+            if value is not None
+        )
+
+    # --------------------------------------------------
+    # B. 外資持股
+    # --------------------------------------------------
+    shareholding_data = get_finmind_data(
+        "TaiwanStockShareholding",
+        stock_id=stock_id,
+        start_date=start_date,
+    )
+
+    shareholding = get_latest_row(shareholding_data)
+
+    foreign_shares = None
+    foreign_ratio = None
+    shareholding_date = None
+
+    if shareholding:
+        foreign_shares = to_number(
+            shareholding.get("ForeignInvestmentShares")
+        )
+        foreign_ratio = to_number(
+            shareholding.get("ForeignInvestmentSharesRatio")
+        )
+        shareholding_date = shareholding.get("date")
+
+    # --------------------------------------------------
+    # C. 融資融券
+    # --------------------------------------------------
+    margin_data = get_finmind_data(
+        "TaiwanStockMarginPurchaseShortSale",
+        stock_id=stock_id,
+        start_date=start_date,
+    )
+
+    margin = get_latest_row(margin_data)
+
+    margin_balance = None
+    short_balance = None
+    margin_date = None
+
+    if margin:
+        margin_balance = to_number(
+            margin.get("MarginPurchaseTodayBalance")
+        )
+        short_balance = to_number(
+            margin.get("ShortSaleTodayBalance")
+        )
+        margin_date = margin.get("date")
+
+    # --------------------------------------------------
+    # D. 組成報告
+    # --------------------------------------------------
+    def show_number(value):
+        if value is None:
+            return "目前無資料"
+        return f"{value:,.0f}"
+
+    def show_ratio(value):
+        if value is None:
+            return "目前無資料"
+        return f"{value:.2f}%"
+
+    report = [
+        f"📊【{stock_id} 三大法人與籌碼】",
+        f"📅 資料日期：{institutional_date or '目前無資料'}",
+        "------------------------------------",
+        f"🌍 外資買賣超：{format_net_buy(foreign_net)}",
+        f"🏦 投信買賣超：{format_net_buy(trust_net)}",
+        f"💼 自營商買賣：{format_net_buy(dealer_net)}",
+        f"📈 三大法人合計：{format_net_buy(total_net)}",
+        "------------------------------------",
+        f"👑 外資持股股數：{show_number(foreign_shares)} 股",
+        f"👑 外資持股比例：{show_ratio(foreign_ratio)}",
+        f"📅 外資持股資料日期：{shareholding_date or '目前無資料'}",
+        "👔 內部大股東持股：目前無資料",
+        "👥 本土與一般投資人：目前無資料",
+        "",
+        "📚【融資融券】",
+        "------------------------------------",
+        f"📈 融資餘額：{show_number(margin_balance)}",
+        f"📉 融券餘額：{show_number(short_balance)}",
+        f"📅 資料日期：{margin_date or '目前無資料'}",
+        "📌 融資融券數值依 FinMind 資料集原始欄位顯示，請勿自行假設單位。",
+    ]
+
+    if not institutional_data and not shareholding and not margin:
+        report.append("")
+        report.append(
+            "⚠️ 目前未取得籌碼資料，請確認 FINMIND_TOKEN、"
+            "API 權限或資料來源狀態。"
+        )
+
+    return "\n".join(report)
+
+
+def query_institutional_recent(stock_id):
+    """
+    相容舊程式呼叫。
+    改由 FinMind 查詢最近資料，不再直接輸出證交所原始欄位。
+    """
+    return query_institutional(stock_id)
+
+
+def query_foreign_shareholding(symbol):
+    """
+    保留原本的外資持股單獨查詢功能。
+    """
+    stock_id = symbol.strip().upper()
+
+    if not stock_id.isdigit():
+        return "外資持股查詢目前僅支援台股代碼，例如：外資 2330。"
 
     data = get_finmind_data(
         "TaiwanStockShareholding",
@@ -425,135 +669,32 @@ def query_foreign_shareholding(symbol):
         start_date=(date.today() - timedelta(days=30)).isoformat(),
     )
 
-    if not data:
+    row = get_latest_row(data)
+
+    if not row:
         return (
-            "目前無法取得外資持股資料。\n"
-            "請確認 FINMIND_TOKEN 是否設定，以及資料來源是否提供此資料集。"
+            f"🌐 {stock_id} 外資持股\n"
+            "目前無資料，請確認 FinMind API 權限或稍後再試。"
         )
 
-    row = data[-1]
+    shares = to_number(row.get("ForeignInvestmentShares"))
+    ratio = to_number(row.get("ForeignInvestmentSharesRatio"))
 
-    return (
-        f"🌐 {stock_id} 外資持股資料\n"
-        f"━━━━━━━━━━━━━━\n"
-        f"日期：{row.get('date', '無資料')}\n"
-        f"資料欄位：\n"
-        + "\n".join(
-            f"{key}：{value}"
-            for key, value in row.items()
-            if key not in ("stock_id", "date")
-        )
-        + "\n\n※ 欄位依資料來源回傳結果顯示。"
+    shares_text = (
+        f"{shares:,.0f} 股" if shares is not None else "目前無資料"
+    )
+    ratio_text = (
+        f"{ratio:.2f}%" if ratio is not None else "目前無資料"
     )
 
-
-# ==================================================
-# 8. 三大法人買賣超
-# ==================================================
-
-def query_institutional(symbol):
-    stock_id = symbol.strip().upper()
-
-    if not stock_id.isdigit():
-        return "法人籌碼目前僅支援台股代碼，例如：籌碼 2330。"
-
-    # 證交所每日三大法人買賣超資料
-    url = "https://www.twse.com.tw/rwd/zh/fund/T86"
-
-    try:
-        response = requests.get(
-            url,
-            params={
-                "date": date.today().strftime("%Y%m%d"),
-                "selectType": "ALLBUT0999",
-                "response": "json",
-            },
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=15,
-        )
-        response.raise_for_status()
-        result = response.json()
-
-        fields = result.get("fields", [])
-        rows = result.get("data", [])
-
-        if not fields or not rows:
-            # 交易所今日可能尚未更新，改查最近一個交易日
-            return query_institutional_recent(stock_id)
-
-        for row in rows:
-            record = dict(zip(fields, row))
-            code = str(record.get("證券代號", "")).strip()
-
-            if code == stock_id:
-                return (
-                    f"🏦 {stock_id} 三大法人資料\n"
-                    f"━━━━━━━━━━━━━━\n"
-                    + "\n".join(
-                        f"{key}：{value}"
-                        for key, value in record.items()
-                    )
-                    + "\n\n※ 數值與欄位名稱依證交所資料顯示。"
-                )
-
-        return query_institutional_recent(stock_id)
-
-    except Exception as exc:
-        logger.exception("法人查詢錯誤")
-        return (
-            f"法人資料暫時無法取得：{type(exc).__name__}\n"
-            "可能是休市日或交易所資料尚未更新。"
-        )
-
-
-def query_institutional_recent(stock_id):
-    """查詢近幾個日期，避開週末及休市日。"""
-    url = "https://www.twse.com.tw/rwd/zh/fund/T86"
-
-    for offset in range(1, 8):
-        target = date.today() - timedelta(days=offset)
-
-        try:
-            response = requests.get(
-                url,
-                params={
-                    "date": target.strftime("%Y%m%d"),
-                    "selectType": "ALLBUT0999",
-                    "response": "json",
-                },
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=12,
-            )
-            response.raise_for_status()
-            result = response.json()
-
-            fields = result.get("fields", [])
-            rows = result.get("data", [])
-
-            if not fields or not rows:
-                continue
-
-            for row in rows:
-                record = dict(zip(fields, row))
-
-                if str(record.get("證券代號", "")).strip() == stock_id:
-                    return (
-                        f"🏦 {stock_id} 三大法人資料\n"
-                        f"資料日期：{target}\n"
-                        f"━━━━━━━━━━━━━━\n"
-                        + "\n".join(
-                            f"{key}：{value}"
-                            for key, value in record.items()
-                        )
-                    )
-
-        except Exception:
-            continue
-
     return (
-        f"最近幾個交易日都找不到 {stock_id} 的法人資料。\n"
-        "請確認股票代碼，或稍後再試。"
+        f"🌐【{stock_id} 外資持股】\n"
+        "------------------------------------\n"
+        f"👑 外資持股股數：{shares_text}\n"
+        f"👑 外資持股比例：{ratio_text}\n"
+        f"📅 資料日期：{row.get('date', '目前無資料')}"
     )
+
 
 
 # ==================================================
