@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta
-import nest_asyncio
 from flask import Flask, abort, request
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -11,25 +10,10 @@ from linebot.v3.messaging import (
     TextMessage,
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
-from pyngrok import conf, ngrok
 import requests
 import yfinance as yf
 
-# 1. 安全地清除所有卡死的 ngrok 舊連線
-ngrok.kill()
-
-# 2. 讓 Flask 在 Colab 正常運行
-nest_asyncio.apply()
 app = Flask(__name__)
-
-# ================= ngrok 連線設定 =================
-conf.get_default().auth_token = "3JLR76fn8kSKOghmHEctjijSk6c_3DUA9nSreqjdwzjAh5sZG"
-
-固定網址 = ngrok.connect(5000).public_url
-print("\n" + "=" * 70)
-print("【重要】請將下方新產生的網址，複製並貼到 LINE Developers 的 Webhook URL：")
-print(固定網址 + "/callback")
-print("=" * 70 + "\n")
 
 # ================= LINE 金鑰設定 =================
 configuration = Configuration(
@@ -215,8 +199,16 @@ def handle_message(event):
 
         # 1. 完整功能選單 / 幫助導覽
         if 客戶輸入的文字.startswith(
-            ("選單", "功能", "幫助", "完整功能選單", "help", "使用說明")
-        ) or 客戶輸入的文字 in ["選單", "功能", "幫助", "Help", "help", "使用說明"]:
+            ("選單", "功能", "幫助", "Help", "help", "使用說明", "完整功能選單")
+        ) or 客戶輸入的文字 in [
+            "選單",
+            "功能",
+            "幫助",
+            "Help",
+            "help",
+            "使用說明",
+            "完整功能選單",
+        ]:
             ans = (
                 "🤖【AI 金融行銷小助理 - 功能選單】\n"
                 "歡迎使用數位理財服務，請直接點擊下方圖文選單或傳送以下指令：\n\n"
@@ -224,7 +216,7 @@ def handle_message(event):
                 "   • 直接輸入代碼（例：2330、0050、AAPL）\n"
                 "   • 回傳開盤價、收盤價、成交量與漲跌幅\n\n"
                 "📊 2. 三大法人買賣超與籌碼\n"
-                "   • 輸入「籌碼 2330」或「外資 0050]\n"
+                "   • 輸入「籌碼 2330」或「外資 0050」\n"
                 "   • 回傳外資/投信/自營商買賣超張數與持股比例\n\n"
                 "⚖️ 3. 股票估值指標（本益比/EPS）\n"
                 "   • 輸入「本益比 2330」\n"
@@ -237,7 +229,7 @@ def handle_message(event):
                 "   • 回傳對新台幣 (TWD) 的即時匯率與變動率"
             )
 
-        # 2. 查「籌碼 / 外資 / 法人」（含防呆：只點選單沒打代碼時自動帶入 2330）
+        # 2. 查「籌碼 / 外資 / 法人」
         elif 客戶輸入的文字.startswith(("籌碼", "外資", "法人")):
             stock_code = (
                 客戶輸入的文字.replace("籌碼", "")
@@ -257,7 +249,7 @@ def handle_message(event):
 
             ans = prefix_tip + query_chips_and_institutional(stock_code)
 
-        # 3. 查「本益比」（含防呆：只點選單沒打代碼時自動帶入 2330）
+        # 3. 查「本益比」
         elif 客戶輸入的文字.startswith("本益比"):
             stock_code = 客戶輸入的文字.replace("本益比", "").strip().upper()
             if not stock_code:
@@ -373,4 +365,4 @@ def handle_message(event):
 
 # ================= 啟動伺服器 =================
 if __name__ == "__main__":
-    app.run(port=5000)
+    app.run(host="0.0.0.0", port=5000)
