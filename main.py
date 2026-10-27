@@ -811,7 +811,7 @@ def handle_command(message):
     message = message.strip()
 
     if not message:
-        return help_text(), None
+        return (查詢失敗：找不到行情，請確認代碼或稍後再試。), None
 
     parts = message.split()
     command = parts[0].upper()
