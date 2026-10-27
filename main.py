@@ -843,7 +843,7 @@ def handle_command(text):
     # 下面保留你原本的其他指令判斷
     # 功能選單
   
-    if command in ["功能選單", "功能", "HELP", "說明"]:
+    if command in ["完整功能選單", "功能", "HELP", "說明"]:
         return (
             "📈【川投顧｜功能選單】\n\n"
             "歡迎使用川投顧！💹\n"
