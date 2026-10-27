@@ -152,12 +152,12 @@ def handle_message(event):
         客戶輸入的文字 = event.message.text.strip()
 
         # 1. 功能選單
-        if 客戶輸入的文字 in ["選單", "功能", "幫助", "Help", "help", "使用說明"]:
+        if any(keyword in 客戶輸入的文字 for keyword in ["選單", "功能", "幫助", "Help", "help", "使用說明"]):
             ans = (
                 "🤖【AI 金融行銷小助理 - 功能選單】\n"
-                "• 查詢即時股價與時間區間：直接輸入代碼（例：2330、0050）\n"
+                "• 查詢即時股價與時間區間：直接輸入代碼（例：2330、AAPL）\n"
                 "• 查詢三大法人籌碼：輸入「籌碼 2330」\n"
-                "• 查詢本益比與 EPS：輸入「本益比 2330」\n"
+                "• 查詢本益比與 EPS：輸入「本益比 2330」或「本益比 AAPL」\n"
                 "• 查詢黃金行情：輸入「黃金」\n"
                 "• 查詢比特幣：輸入「比特幣」\n"
                 "• 查詢匯率：輸入「美元」或「日圓」"
@@ -252,7 +252,7 @@ def handle_message(event):
                             "margin": "md"
                           },
                           {
-                            "type": "separator",
+                            "separator": True,
                             "margin": "lg"
                           },
                           {
@@ -324,19 +324,31 @@ def handle_message(event):
                 )
             )
 
-        # 4. 查本益比
+        # 4. 查本益比（即時動態抓取與計算）
         elif 客戶輸入的文字.startswith("本益比"):
             stock_code = 客戶輸入的文字.replace("本益比", "").strip().upper()
             if not stock_code:
                 stock_code = "2330"
+            
             ticker_symbol = f"{stock_code}.TW" if stock_code.isdigit() else stock_code
             try:
-                info = yf.Ticker(ticker_symbol).info
+                ticker = yf.Ticker(ticker_symbol)
+                info = ticker.info
                 company_name = info.get("shortName", stock_code)
+                
                 pe = info.get("trailingPE")
                 eps = info.get("trailingEps")
-                pe_str = f"{pe:.2f} 倍" if pe else "26.45 倍 (估算值)"
-                eps_str = f"{eps:.2f} 元" if eps else "40.85 元"
+                
+                # 如果資料庫沒有提供 PE，但有抓到收盤價跟 EPS，我們自己現場算！
+                if not pe or pe == 0:
+                    df_history = ticker.history(period="5d")
+                    if not df_history.empty and eps and eps > 0:
+                        current_close = df_history.iloc[-1]["Close"]
+                        pe = current_close / eps
+
+                pe_str = f"{pe:.2f} 倍" if pe and pe > 0 else "無資料 (或無近期盈餘數據)"
+                eps_str = f"{eps:.2f} 元" if eps else "無資料"
+
                 ans = (
                     f"⚖️【{company_name} ({stock_code})】估值指標\n"
                     f"------------------------------------\n"
@@ -345,13 +357,8 @@ def handle_message(event):
                     f"------------------------------------"
                 )
             except Exception:
-                ans = (
-                    f"⚖️【台積電 ({stock_code})】估值指標\n"
-                    f"------------------------------------\n"
-                    f"🔹 本益比 (PE)：26.45 倍\n"
-                    f"🔹 每股盈餘 (EPS)：40.85 元\n"
-                    f"------------------------------------"
-                )
+                ans = f"找不到代碼為「{stock_code}」的本益比資料，請確認代碼是否正確。"
+
             line_bot_api.reply_message_with_http_info(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
@@ -413,7 +420,7 @@ def handle_message(event):
                     cp = round(df.iloc[-1]["Close"], 4)
                     ans = f"💱 最新匯率：{cp} 新台幣 (TWD)"
                 else:
-                    ans = "暫時無法取得匯率數據。"
+                    ans = f"暫時無法取得匯率數據。"
             except Exception:
                 ans = "查詢匯率發生異常。"
             line_bot_api.reply_message_with_http_info(
