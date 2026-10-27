@@ -466,25 +466,49 @@ def query_market(symbol, title):
         "非台灣銀樓牌價。"
     )
 
-
 # =========================
-# 三大法人買賣超
+# 三大法人 + 散戶參考籌碼
 # =========================
 
 def query_institutional(symbol):
     if not re.fullmatch(r"\d{4,6}", symbol):
         raise ValueError(
-            "三大法人查詢請輸入台股數字代碼，例如：籌碼 2330"
+            "請輸入台股數字代碼，例如：籌碼 2330"
         )
+
+    def to_int(value):
+        """將 API 回傳的數字轉成整數。"""
+        try:
+            return int(float(str(value).replace(",", "").strip()))
+        except (TypeError, ValueError):
+            return 0
+
+    def fmt(value):
+        """顯示股數並加上千分位。"""
+        return f"{value:+,}" if value != 0 else "0"
+
+    def get_field(fields, row, field_name):
+        """依照完整欄位名稱取值，避免抓錯欄位。"""
+        try:
+            index = fields.index(field_name)
+            return to_int(row[index])
+        except (ValueError, IndexError):
+            return 0
 
     today = datetime.now()
 
-    for offset in range(7):
+    # ---------------------------------
+    # 1. 查詢證交所上市股票三大法人
+    # ---------------------------------
+    institutional_text = None
+    latest_day = None
+
+    for offset in range(10):
         day = today - timedelta(days=offset)
 
         params = {
             "date": day.strftime("%Y%m%d"),
-            "selectType": "ALLBUT0999",
+            "selectType": "ALL",
             "response": "json",
         }
 
@@ -495,7 +519,6 @@ def query_institutional(symbol):
                 headers=HEADERS,
                 timeout=12,
             )
-
             response.raise_for_status()
             result = response.json()
 
@@ -505,13 +528,7 @@ def query_institutional(symbol):
             fields = result.get("fields", [])
             rows = result.get("data", [])
 
-            code_index = next(
-                (
-                    i for i, field in enumerate(fields)
-                    if "證券代號" in field
-                ),
-                0,
-            )
+            code_index = fields.index("證券代號")
 
             match = next(
                 (
@@ -522,42 +539,223 @@ def query_institutional(symbol):
                 None,
             )
 
-            if not match:
+            if match is None:
                 continue
 
-            def find_value(keywords):
-                for i, field in enumerate(fields):
-                    if (
-                        all(word in field for word in keywords)
-                        and i < len(match)
-                    ):
-                        return match[i]
-
-                return "無資料"
-
-            foreign = find_value(["外陸資買賣超股數"])
-            trust = find_value(["投信買賣超股數"])
-            dealer = find_value(["自營商買賣超股數"])
-
-            return (
-                f"🏦 {symbol} 三大法人買賣超\n"
-                f"資料日期：{day:%Y-%m-%d}\n"
-                f"外資：{foreign} 股\n"
-                f"投信：{trust} 股\n"
-                f"自營商：{dealer} 股\n\n"
-                "資料來源：臺灣證券交易所\n"
-                "※ 僅查詢上市股票；上櫃股票需使用櫃買中心資料。"
+            # 外資（不含外資自營商）
+            foreign_buy = get_field(
+                fields, match,
+                "外陸資買進股數(不含外資自營商)"
             )
+            foreign_sell = get_field(
+                fields, match,
+                "外陸資賣出股數(不含外資自營商)"
+            )
+            foreign_net = get_field(
+                fields, match,
+                "外陸資買賣超股數(不含外資自營商)"
+            )
+
+            # 外資自營商：併入外資，避免漏算
+            foreign_dealer_buy = get_field(
+                fields, match, "外資自營商買進股數"
+            )
+            foreign_dealer_sell = get_field(
+                fields, match, "外資自營商賣出股數"
+            )
+            foreign_dealer_net = get_field(
+                fields, match, "外資自營商買賣超股數"
+            )
+
+            foreign_buy += foreign_dealer_buy
+            foreign_sell += foreign_dealer_sell
+            foreign_net += foreign_dealer_net
+
+            # 投信
+            trust_buy = get_field(
+                fields, match, "投信買進股數"
+            )
+            trust_sell = get_field(
+                fields, match, "投信賣出股數"
+            )
+            trust_net = get_field(
+                fields, match, "投信買賣超股數"
+            )
+
+            # 自營商：自行買賣 + 避險
+            dealer_buy = (
+                get_field(
+                    fields, match,
+                    "自營商買進股數(自行買賣)"
+                )
+                + get_field(
+                    fields, match,
+                    "自營商買進股數(避險)"
+                )
+            )
+            dealer_sell = (
+                get_field(
+                    fields, match,
+                    "自營商賣出股數(自行買賣)"
+                )
+                + get_field(
+                    fields, match,
+                    "自營商賣出股數(避險)"
+                )
+            )
+            dealer_net = get_field(
+                fields, match, "自營商買賣超股數"
+            )
+
+            # 三大法人合計
+            total_buy = foreign_buy + trust_buy + dealer_buy
+            total_sell = foreign_sell + trust_sell + dealer_sell
+
+            # 優先使用證交所公布的合計淨額
+            total_net = get_field(
+                fields, match, "三大法人買賣超股數"
+            )
+
+            latest_day = day
+            institutional_text = (
+                f"🏦 {symbol}｜三大法人籌碼\n"
+                f"資料日期：{day:%Y-%m-%d}\n"
+                f"單位：股\n\n"
+                f"【外資】\n"
+                f"買進：{foreign_buy:,} 股\n"
+                f"賣出：{foreign_sell:,} 股\n"
+                f"買賣超：{fmt(foreign_net)} 股\n\n"
+                f"【投信】\n"
+                f"買進：{trust_buy:,} 股\n"
+                f"賣出：{trust_sell:,} 股\n"
+                f"買賣超：{fmt(trust_net)} 股\n\n"
+                f"【自營商】\n"
+                f"買進：{dealer_buy:,} 股\n"
+                f"賣出：{dealer_sell:,} 股\n"
+                f"買賣超：{fmt(dealer_net)} 股\n\n"
+                f"📌【三大法人合計】\n"
+                f"總買進：{total_buy:,} 股\n"
+                f"總賣出：{total_sell:,} 股\n"
+                f"總買賣超：{fmt(total_net)} 股\n"
+            )
+            break
 
         except Exception as exc:
             app.logger.warning(
-                "三大法人查詢失敗：%s", exc
+                "證交所法人資料查詢失敗：%s", exc
             )
 
-    raise ValueError(
-        "目前查不到三大法人資料，可能是非交易日、"
-        "資料尚未公布或資料來源暫時無法使用。"
+    if institutional_text is None:
+        raise ValueError(
+            "目前查不到上市股票法人資料。"
+            "請確認代碼、交易日期或稍後再試。"
+        )
+
+    # ---------------------------------
+    # 2. 查詢融資融券（散戶參考指標）
+    #    使用 FinMind API V4
+    # ---------------------------------
+    margin_text = "\n👥【散戶參考指標｜融資融券】\n"
+
+    finmind_token = os.getenv("FINMIND_TOKEN")
+
+    if not finmind_token:
+        margin_text += (
+            "尚未設定 FINMIND_TOKEN，"
+            "暫時無法取得融資融券資料。\n"
+        )
+    else:
+        try:
+            margin_response = requests.get(
+                "https://api.finmindtrade.com/api/v4/data",
+                params={
+                    "dataset": "TaiwanStockMarginPurchaseShortSale",
+                    "data_id": symbol,
+                    "start_date": (
+                        latest_day - timedelta(days=15)
+                    ).strftime("%Y-%m-%d"),
+                    "end_date": latest_day.strftime("%Y-%m-%d"),
+                },
+                headers={
+                    "Authorization": f"Bearer {finmind_token}"
+                },
+                timeout=15,
+            )
+            margin_response.raise_for_status()
+            margin_result = margin_response.json()
+
+            if margin_result.get("status") != 200:
+                raise ValueError(
+                    margin_result.get("msg", "FinMind 回傳錯誤")
+                )
+
+            records = margin_result.get("data", [])
+
+            if not records:
+                margin_text += "目前沒有可用的融資融券資料。\n"
+            else:
+                records.sort(key=lambda item: item["date"])
+                current = records[-1]
+
+                previous = (
+                    records[-2] if len(records) >= 2 else None
+                )
+
+                margin_balance = to_int(
+                    current.get("MarginPurchaseTodayBalance")
+                )
+                short_balance = to_int(
+                    current.get("ShortSaleTodayBalance")
+                )
+
+                margin_change = (
+                    margin_balance - to_int(
+                        previous.get("MarginPurchaseTodayBalance")
+                    )
+                    if previous else None
+                )
+                short_change = (
+                    short_balance - to_int(
+                        previous.get("ShortSaleTodayBalance")
+                    )
+                    if previous else None
+                )
+
+                margin_text += (
+                    f"資料日期：{current['date']}\n"
+                    f"融資買進："
+                    f"{to_int(current.get('MarginPurchaseBuy')):,} 張\n"
+                    f"融資賣出："
+                    f"{to_int(current.get('MarginPurchaseSell')):,} 張\n"
+                    f"融資餘額：{margin_balance:,} 張\n"
+                    f"融資餘額變化："
+                    f"{fmt(margin_change) if margin_change is not None else '暫無比較資料'} 張\n\n"
+                    f"融券買進："
+                    f"{to_int(current.get('ShortSaleBuy')):,} 張\n"
+                    f"融券賣出："
+                    f"{to_int(current.get('ShortSaleSell')):,} 張\n"
+                    f"融券餘額：{short_balance:,} 張\n"
+                    f"融券餘額變化："
+                    f"{fmt(short_change) if short_change is not None else '暫無比較資料'} 張\n"
+                )
+
+        except Exception:
+            app.logger.exception("FinMind 融資融券查詢失敗")
+            margin_text += (
+                "目前無法取得融資融券資料，"
+                "請稍後再試。\n"
+            )
+
+    return (
+        institutional_text
+        + margin_text
+        + "\n資料來源：臺灣證券交易所、FinMind\n"
+        "※ 融資融券是市場籌碼參考指標，"
+        "不代表所有散戶的完整買賣超。"
+        "以上資料僅供參考，不構成投資建議。"
     )
+
+
 
 
 # =========================
