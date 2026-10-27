@@ -801,8 +801,34 @@ def handle_command(message):
 
     parts = message.split()
     command = parts[0].upper()
+def handle_command(text):
+    parts = text.strip().split()
+    command = parts[0] if parts else ""
 
+    # 直接輸入股票代碼 + 起始日期 + 結束日期
+    if (
+        len(parts) == 3
+        and re.fullmatch(r"[A-Za-z0-9.^=-]+", parts[0])
+        and re.fullmatch(r"\d{4}-\d{2}-\d{2}", parts[1])
+        and re.fullmatch(r"\d{4}-\d{2}-\d{2}", parts[2])
+    ):
+        symbol = parts[0].upper()
+        start_date = parts[1]
+        end_date = parts[2]
+
+        return query_custom_period(
+            symbol,
+            start_date,
+            end_date
+        ), None
+
+    # 功能說明
+    if command in ["功能選單", "功能", "HELP", "說明"]:
+        return help_text(), None
+    
+    # 下面保留你原本的其他指令判斷
     # 功能選單
+  
     if command in ["功能選單", "功能", "HELP", "說明"]:
         return (
             "📈【川投顧｜功能選單】\n\n"
