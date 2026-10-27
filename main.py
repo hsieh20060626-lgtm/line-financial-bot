@@ -62,7 +62,7 @@ def query_stock_price(message):
             f"今日漲跌幅是 {sign}{change_pct:.2f}%"
         )
     except Exception:
-        return f"系統處理「{stock_code}」時發生異常，請稍後再試。"
+        return f"系統處理「{stock_code}」時發生異常請稍後再試。"
 
 
 # ================= 核心功能二：三大法人買賣超與籌碼 =================
@@ -359,8 +359,8 @@ def handle_message(event):
                 )
             )
 
-        # 3. 如果使用者直接輸入「股票代碼」，主動跳出時間區間按鈕選單
-        elif 客戶輸入_代碼 := 客戶輸入的文字.upper().replace(".TW", ""):
+        # 3. 如果使用者直接輸入文字或代碼
+        else:
             if 客戶輸入的文字.startswith(("籌碼", "外資", "法人")):
                 stock_code = 客戶輸入的文字.replace("籌碼", "").replace("外資", "").replace("法人", "").strip().upper()
                 if not stock_code:
