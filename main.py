@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 from flask import Flask, abort, request
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
+from linebot.v3.webhooks import MessageEvent, TextMessageContent
 from linebot.v3.messaging import (
     ApiClient,
     Configuration,
