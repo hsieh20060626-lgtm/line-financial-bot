@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import hmac
 import logging
 from datetime import date, timedelta
 
@@ -15,6 +16,7 @@ from linebot.v3.messaging import (
     ApiClient,
     MessagingApi,
     ReplyMessageRequest,
+    MulticastRequest,
     TextMessage,
     FlexMessage,
     FlexContainer,
@@ -23,6 +25,8 @@ from linebot.v3.messaging import (
     MessageAction,
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
+
+from news import fetch_news, news_card, query_news, news_recipients
 
 
 # ==================================================
@@ -45,6 +49,8 @@ def require_env(name):
 LINE_CHANNEL_ACCESS_TOKEN = require_env("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = require_env("LINE_CHANNEL_SECRET")
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "")
+# 新聞推播：CRON_SECRET 是排程呼叫 /push_news 時的密碼；NEWS_USER_IDS 是收新聞的人（逗號分隔）
+CRON_SECRET = os.getenv("CRON_SECRET", "")
 
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
@@ -279,6 +285,7 @@ def quick_reply_items():
         ("法人籌碼", "籌碼 2330"),
         ("本益比/EPS", "本益比 2330"),
         ("歷史股價", "歷史 2330"),
+        ("財經新聞", "新聞"),
         ("其他資訊", "other_info"),
     ])
 
@@ -299,14 +306,13 @@ def period_quick(alias, include_today=False):
     return build_quick(items)
 
 
-def send_reply(reply_token, content, quick_replies=None):
+def build_message(content, quick_replies=None):
     """content 可以是純文字，或 make_card() 產生的卡片。"""
     quick = QuickReply(items=quick_replies) if quick_replies else None
 
-    message = None
     if isinstance(content, dict):
         try:
-            message = FlexMessage(
+            return FlexMessage(
                 alt_text=str(content["alt"])[:400],
                 contents=FlexContainer.from_dict(content["bubble"]),
                 quick_reply=quick,
@@ -315,8 +321,11 @@ def send_reply(reply_token, content, quick_replies=None):
             logger.exception("卡片建立失敗，改用純文字")
             content = content.get("text", "查詢完成，但顯示卡片時發生問題。")
 
-    if message is None:
-        message = TextMessage(text=str(content)[:4900], quick_reply=quick)
+    return TextMessage(text=str(content)[:4900], quick_reply=quick)
+
+
+def send_reply(reply_token, content, quick_replies=None):
+    message = build_message(content, quick_replies)
 
     with ApiClient(configuration) as api_client:
         api = MessagingApi(api_client)
@@ -608,6 +617,9 @@ def help_text():
         "（例：美元 一週）\n\n"
         "₿【七、比特幣】\n"
         "比特幣 / BTC\n\n"
+        "📰【八、財經新聞】\n"
+        "新聞（每天早上也會自動推播給訂閱者）\n"
+        "我的ID（取得你的 LINE ID）\n\n"
         f"{DISCLAIMER}"
     )
 
@@ -977,6 +989,30 @@ def query_foreign_shareholding(symbol):
 
 
 # ==================================================
+# 10.5 財經新聞推播（新聞內容在 news.py）
+# ==================================================
+
+def push_news():
+    """把今日新聞推播給 NEWS_USER_IDS 裡的所有人，回傳結果說明文字。"""
+    recipients = news_recipients()
+    if not recipients:
+        return "沒有設定 NEWS_USER_IDS，未推播。"
+
+    items = fetch_news()
+    if not items:
+        return "沒有抓到新聞，未推播。"
+
+    message = build_message(news_card(items))
+
+    with ApiClient(configuration) as api_client:
+        api = MessagingApi(api_client)
+        for i in range(0, len(recipients), 500):
+            api.multicast(MulticastRequest(to=recipients[i:i + 500], messages=[message]))
+
+    return f"已推播 {len(items)} 則新聞給 {len(recipients)} 位。"
+
+
+# ==================================================
 # 11. 指令解析路由
 #     回傳 (內容, 快速選單)；內容可以是文字或卡片
 # ==================================================
@@ -989,7 +1025,7 @@ def valid_target(token):
     return token.lower() in ASSET_ALIASES or bool(SYMBOL_RE.fullmatch(token))
 
 
-def handle_command(text):
+def handle_command(text, user_id=None):
     default_quick = quick_reply_items()
 
     text = text.strip()
@@ -997,6 +1033,18 @@ def handle_command(text):
         return "請輸入指令，輸入「選單」查看完整功能。", default_quick
 
     command = text.lower()
+
+    if command in ("新聞", "財經新聞", "news"):
+        return query_news(), default_quick
+
+    if command in ("我的id", "myid", "id"):
+        if not user_id:
+            return "目前無法取得你的 LINE ID，請在一對一聊天室輸入「我的ID」。", default_quick
+        return (
+            "🆔 你的 LINE ID：\n"
+            f"{user_id}\n\n"
+            "想訂閱每天早上的財經新聞，請把這串 ID 傳給管理員加入名單。"
+        ), default_quick
 
     if command in ("選單", "菜單", "menu", "help", "幫助", "說明", "功能", "功能選單", "完整選單", "使用說明"):
         return help_text(), default_quick
@@ -1076,6 +1124,19 @@ def home():
     return "川投顧 LINE Bot is running."
 
 
+@app.route("/push_news", methods=["GET", "POST"])
+def push_news_route():
+    """給排程（例如 cron-job.org）每天早上呼叫：/push_news?key=你的CRON_SECRET"""
+    key = request.args.get("key", "")
+    if not CRON_SECRET or not hmac.compare_digest(key, CRON_SECRET):
+        abort(403)
+    try:
+        return push_news()
+    except Exception:
+        logger.exception("新聞推播失敗")
+        abort(500)
+
+
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature", "")
@@ -1097,7 +1158,8 @@ def callback():
 def handle_message(event):
     user_text = event.message.text or ""
     try:
-        content, quick = handle_command(user_text)
+        user_id = getattr(event.source, "user_id", None)
+        content, quick = handle_command(user_text, user_id=user_id)
         send_reply(event.reply_token, content, quick_replies=quick)
     except Exception:
         logger.exception("處理訊息失敗")
