@@ -34,8 +34,8 @@ NEWS_SOURCES = [
     ("中央社", "site:cna.com.tw 台股 when:1d"),
 ]
 
-PER_SOURCE = 2   # 每個媒體最多取幾則
-TOTAL_LIMIT = 8  # 卡片最多顯示幾則
+PER_SOURCE = 1   # 每個媒體最多取幾則
+TOTAL_LIMIT = 4  # 卡片最多顯示幾則
 CACHE_SECONDS = 600
 
 
