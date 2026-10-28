@@ -95,7 +95,7 @@ def normalize_ticker(symbol):
 
 
 def get_finmind_data(dataset, stock_id=None, start_date=None):
-    """取得 FinMind 資料；沒有 Token 時回傳空資料。"""
+    """取得 FinMind 真實資料（支援無 Token 免費公開查詢與有 Token 查詢）。"""
     params = {
         "dataset": dataset,
     }
@@ -306,69 +306,150 @@ def query_custom_period(symbol, start_date, end_date):
     except Exception:
         return "日期格式錯誤，請使用 YYYY-MM-DD。"
 
-
 # ==================================================
-# 6. 本益比與 EPS（防呆強化版）
+# 6. 本益比與 EPS（100% 真實數據：台股 FinMind + 美股 yfinance）
 # ==================================================
 
 def query_valuation(stock_id):
     stock_id = stock_id.strip().upper()
-    ticker_symbol = f"{stock_id}.TW" if stock_id.isdigit() else stock_id
+    today = date.today()
 
-    # 針對常見熱門股給予精準預設值（確保展示時 100% 有漂亮的真實數字）
-    hardcoded_pe = {
-        "2330": {"name": "台灣積體電路製造", "pe": "26.45", "eps": "40.85"},
-        "2406": {"name": "國巨", "pe": "16.50", "eps": "22.10"},
-        "0050": {"name": "元大台灣50", "pe": "21.20", "eps": "8.50"},
-        "AAPL": {"name": "Apple Inc.", "pe": "32.10", "eps": "6.45"},
-        "NVDA": {"name": "NVIDIA Corporation", "pe": "45.80", "eps": "3.20"}
-    }
+    # --------------------------------------------------
+    # 情況 A：台股查詢（純數字代碼，如 2330、2406）
+    # --------------------------------------------------
+    if stock_id.isdigit():
+        start_date = (today - timedelta(days=60)).isoformat()
 
-    try:
-        ticker = yf.Ticker(ticker_symbol)
-        info = ticker.info or {}
-        company_name = info.get("shortName") or info.get("longName") or stock_id
-        
-        pe = info.get("trailingPE")
-        eps = info.get("trailingEps")
-
-        # 如果 yfinance 抓不到，但剛好在我們的熱門對照表裡，直接採用！
-        if (not pe or pe == 0 or not eps) and stock_id in hardcoded_pe:
-            data = hardcoded_pe[stock_id]
-            company_name = data["name"]
-            pe_str = f"{data['pe']} 倍"
-            eps_str = f"{data['eps']} 元"
-        else:
-            # 嘗試動態計算
-            if (not pe or pe == 0) and eps and eps > 0:
-                df_history = ticker.history(period="5d")
-                if not df_history.empty:
-                    pe = float(df_history.iloc[-1]["Close"]) / float(eps)
-
-            pe_str = f"{pe:.2f} 倍" if pe and pe > 0 else "25.50 倍 (市場均值)"
-            eps_str = f"{eps:.2f} 元" if eps is not None else "12.80 元 (近四季財報)"
-
-        return (
-            f"⚖️【{company_name} ({stock_id})】估值指標\n"
-            f"━━━━━━━━━━━━━━\n"
-            f"🔹 本益比 (PE)：{pe_str}\n"
-            f"🔹 每股盈餘 (EPS)：{eps_str}\n"
-            f"━━━━━━━━━━━━━━\n"
-            f"※ 數據來源：Yahoo Finance 財經資料庫"
+        # 1. 抓 FinMind 台股真實每日估值 (PER, PBR, 殖利率)
+        per_data = get_finmind_data(
+            "TaiwanStockPER",
+            stock_id=stock_id,
+            start_date=start_date,
         )
-    except Exception as exc:
-        logger.exception("估值查詢錯誤")
-        if stock_id in hardcoded_pe:
-            data = hardcoded_pe[stock_id]
+        latest_per = get_latest_row(per_data)
+
+        # 2. 抓 FinMind 台股真實季財報 (找 EPS)
+        eps_data = get_finmind_data(
+            "TaiwanStockFinancialStatements",
+            stock_id=stock_id,
+            start_date=(today - timedelta(days=400)).isoformat(),
+        )
+        eps_rows = [
+            row for row in eps_data
+            if str(row.get("type", "")).upper() == "EPS"
+            or "每股盈餘" in str(row.get("origin_name", ""))
+        ]
+        eps_rows = sorted(eps_rows, key=lambda x: str(x.get("date", "")), reverse=True)
+        latest_eps_row = eps_rows[0] if eps_rows else None
+
+        # 同時用 yfinance 抓最新即時股價（用來顯示公司名稱與計算即時動態本益比）
+        current_price = None
+        company_name = stock_id
+        try:
+            ticker = yf.Ticker(f"{stock_id}.TW")
+            hist = ticker.history(period="5d")
+            if not hist.empty:
+                current_price = float(hist["Close"].dropna().iloc[-1])
+            info = ticker.info or {}
+            company_name = info.get("shortName") or info.get("longName") or stock_id
+        except Exception:
+            pass
+
+        if not latest_per and not latest_eps_row:
             return (
-                f"⚖️【{data['name']} ({stock_id})】估值指標\n"
-                f"━━━━━━━━━━━━━━\n"
-                f"🔹 本益比 (PE)：{data['pe']} 倍\n"
-                f"🔹 每股盈餘 (EPS)：{data['eps']} 元\n"
-                f"━━━━━━━━━━━━━━\n"
-                f"※ 數據來源：專業財務預估值"
+                f"⚠️【{stock_id} 估值查詢】\n"
+                "目前從台股資料庫查無此代碼的本益比或財報資料（可能為無本益比之 ETF，或近期無盈餘）。"
             )
-        return f"找不到代碼為「{stock_id}」的本益比資料。"
+
+        lines = [
+            f"⚖️【{company_name}（{stock_id}）真實估值指標】",
+            "━━━━━━━━━━━━━━",
+        ]
+
+        if current_price:
+            lines.append(f"💵 最新參考股價：{current_price:,.2f} TWD")
+
+        if latest_per:
+            per_val = to_number(latest_per.get("PER"))
+            pbr_val = to_number(latest_per.get("PBR"))
+            dy_val = to_number(latest_per.get("dividend_yield"))
+            per_date = latest_per.get("date", "無資料")
+
+            lines.append(f"📈 本益比 (PER)：{f'{per_val:.2f} 倍' if per_val else '無資料 (或虧損)'}")
+            lines.append(f"📚 股價淨值比 (PBR)：{f'{pbr_val:.2f}' if pbr_val else '無資料'}")
+            lines.append(f"💰 現金殖利率：{f'{dy_val:.2f}%' if dy_val else '無資料'}")
+            lines.append(f"📅 估值資料日期：{per_date}")
+
+            # 若有最新股價與官方本益比，可反推證交所採用之近四季累積 EPS
+            if current_price and per_val and per_val > 0:
+                implied_ttm_eps = current_price / per_val
+                lines.append(f"🧮 反推近四季累計 EPS：約 {implied_ttm_eps:.2f} 元")
+        else:
+            lines.append("📈 本益比 (PER)：目前無資料")
+
+        lines.append("━━━━━━━━━━━━━━")
+
+        if latest_eps_row:
+            eps_val = to_number(latest_eps_row.get("value"))
+            eps_date = latest_eps_row.get("date", "無資料")
+            lines.append(f"🧾 最新單季財報 EPS：{f'{eps_val:.2f} 元' if eps_val is not None else '無資料'}")
+            lines.append(f"📅 財報季度日期：{eps_date}")
+            if len(eps_rows) >= 4:
+                ttm_eps = sum(to_number(r.get("value")) or 0 for r in eps_rows[:4])
+                lines.append(f"📊 近四季財報合計 EPS：{ttm_eps:.2f} 元")
+        else:
+            lines.append("🧾 財報 EPS：目前無單季財報明細")
+
+        lines.append("━━━━━━━━━━━━━━")
+        lines.append("※ 資料來源：FinMind 台股官方資料庫（每日盤後更新）")
+        return "\n".join(lines)
+
+    # --------------------------------------------------
+    # 情況 B：美股查詢（英文代碼，如 AAPL、NVDA、TSLA）
+    # --------------------------------------------------
+    else:
+        try:
+            ticker = yf.Ticker(stock_id)
+            info = ticker.info or {}
+            hist = ticker.history(period="5d")
+
+            current_price = float(hist["Close"].dropna().iloc[-1]) if not hist.empty else info.get("currentPrice")
+            company_name = info.get("shortName") or info.get("longName") or stock_id
+
+            trailing_pe = to_number(info.get("trailingPE"))
+            forward_pe = to_number(info.get("forwardPE"))
+            trailing_eps = to_number(info.get("trailingEps"))
+            forward_eps = to_number(info.get("forwardEps"))
+            pbr = to_number(info.get("priceToBook"))
+
+            # 如果沒直接給 trailingPE，但有即時股價跟 trailingEps，即時相除算出最新 PE
+            if (not trailing_pe) and current_price and trailing_eps and trailing_eps > 0:
+                trailing_pe = current_price / trailing_eps
+
+            if not any([trailing_pe, forward_pe, trailing_eps, forward_eps]):
+                return f"⚠️ 查無美股【{stock_id}】的估值與 EPS 資料，請確認代碼是否正確。"
+
+            lines = [
+                f"⚖️【{company_name}（{stock_id}）美股即時估值】",
+                "━━━━━━━━━━━━━━",
+            ]
+            if current_price:
+                lines.append(f"💵 最新股價：${current_price:,.2f} USD")
+
+            lines.append(f"📈 本益比 (TTM PE)：{f'{trailing_pe:.2f} 倍' if trailing_pe else '無資料'}")
+            lines.append(f"🔮 預估本益比 (Forward PE)：{f'{forward_pe:.2f} 倍' if forward_pe else '無資料'}")
+            lines.append(f"📚 股價淨值比 (PBR)：{f'{pbr:.2f}' if pbr else '無資料'}")
+            lines.append("━━━━━━━━━━━━━━")
+            lines.append(f"💵 近四季 EPS (TTM)：{f'${trailing_eps:.2f}' if trailing_eps is not None else '無資料'}")
+            lines.append(f"🚀 預估未來 EPS (Forward)：{f'${forward_eps:.2f}' if forward_eps is not None else '無資料'}")
+            lines.append("━━━━━━━━━━━━━━")
+            lines.append("※ 資料來源：Yahoo Finance 即時報價與財報計算")
+            return "\n".join(lines)
+
+        except Exception as exc:
+            logger.exception("美股估值查詢錯誤")
+            return f"美股估值查詢失敗：{type(exc).__name__}"
+
 
 # ==================================================
 # 7. 三大法人與籌碼
