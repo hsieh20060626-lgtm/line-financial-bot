@@ -331,45 +331,162 @@ def query_custom_period(symbol, start_date, end_date):
 
 
 # ==================================================
-# 6. 本益比與 EPS（絕對安全防爆版）
+# 6. 本益比與 EPS：最新股價 ÷ 最近四季 EPS
 # ==================================================
 
 def query_valuation(stock_id):
+    stock_id = stock_id.strip().upper()
+
     try:
-        stock_id = stock_id.strip().upper()
-        ticker_symbol = f"{stock_id}.TW" if stock_id.isdigit() else stock_id
-        
+        # 台股使用 .TW；美股直接使用股票代號
+        ticker_symbol = (
+            f"{stock_id}.TW" if stock_id.isdigit()
+            else stock_id
+        )
+
         ticker = yf.Ticker(ticker_symbol)
-        info = {}
+
+        # 1. 取得最近可用的股價
+        hist = ticker.history(
+            period="5d",
+            auto_adjust=False
+        )
+
+        if hist.empty or "Close" not in hist.columns:
+            return (
+                f"⚠️【{stock_id} 本益比查詢】\n"
+                "目前無法取得股價，請稍後再試。"
+            )
+
+        hist = hist.dropna(subset=["Close"])
+
+        if hist.empty:
+            return "⚠️ 目前沒有可用的股價資料。"
+
+        latest_price = float(hist.iloc[-1]["Close"])
+        price_date = hist.index[-1].strftime("%Y-%m-%d")
+
+        # 2. 取得公司名稱
         try:
             info = ticker.info or {}
         except Exception:
-            pass
+            info = {}
 
-        company_name = info.get("shortName") or info.get("longName") or stock_id
-        pe = to_number(info.get("trailingPE"))
-        eps = to_number(info.get("trailingEps"))
+        company_name = (
+            info.get("shortName")
+            or info.get("longName")
+            or stock_id
+        )
 
-        # 若無直接數據但有股價與 EPS，動態計算
-        if (not pe or pe == 0) and eps and eps > 0:
-            df = ticker.history(period="5d")
-            if not df.empty:
-                pe = float(df.iloc[-1]["Close"]) / eps
+        currency = info.get("currency", "")
+        currency_text = f" {currency}" if currency else ""
 
-        pe_str = f"{pe:.2f} 倍" if pe and pe > 0 else "依近期財報估算"
-        eps_str = f"{eps:.2f} 元" if eps is not None else "依最新財報提供"
+        # 3. 取得最近四季財報
+        try:
+            quarterly = ticker.quarterly_income_stmt
+        except Exception as exc:
+            logger.warning(
+                "取得季度財報失敗 (%s)：%s",
+                ticker_symbol,
+                exc
+            )
+            quarterly = None
+
+        eps_values = []
+        eps_dates = []
+
+        if quarterly is not None and not quarterly.empty:
+            # Yahoo Finance 不同股票的 EPS 欄位名稱可能不同
+            possible_rows = [
+                "Diluted EPS",
+                "Basic EPS",
+            ]
+
+            eps_row_name = None
+
+            for row_name in possible_rows:
+                if row_name in quarterly.index:
+                    eps_row_name = row_name
+                    break
+
+            if eps_row_name is not None:
+                # 由最新季度排到最舊季度
+                columns = sorted(
+                    quarterly.columns,
+                    key=lambda col: str(col),
+                    reverse=True
+                )
+
+                for col in columns:
+                    value = to_number(
+                        quarterly.loc[eps_row_name, col]
+                    )
+
+                    if value is None:
+                        continue
+
+                    eps_values.append(value)
+                    eps_dates.append(
+                        col.strftime("%Y-%m-%d")
+                        if hasattr(col, "strftime")
+                        else str(col)
+                    )
+
+                    if len(eps_values) == 4:
+                        break
+
+        # 4. 必須取得四季 EPS，才自行計算 PE
+        if len(eps_values) < 4:
+            return (
+                f"⚠️【{company_name}（{stock_id}）估值】\n"
+                "━━━━━━━━━━━━━━\n"
+                f"最新可用股價：{latest_price:,.2f}"
+                f"{currency_text}\n"
+                f"股價資料日期：{price_date}\n"
+                "最近四季 EPS：資料不足，無法可靠計算\n"
+                "本益比：目前無法計算\n\n"
+                "原因：Yahoo Finance 未提供足夠的季度 EPS。\n"
+                "請檢查該股票的季度財報資料是否完整。"
+            )
+
+        # 5. 加總最近四季 EPS
+        eps_ttm = sum(eps_values)
+
+        # EPS 必須大於 0，才顯示一般正本益比
+        if eps_ttm > 0:
+            pe = latest_price / eps_ttm
+            pe_text = f"{pe:.2f} 倍"
+        elif eps_ttm < 0:
+            pe_text = "不適用（最近四季 EPS 為負）"
+        else:
+            pe_text = "不適用（最近四季 EPS 為零）"
+
+        eps_detail = "\n".join(
+            f"第{i + 1}季 EPS：{value:.2f}"
+            for i, value in enumerate(eps_values)
+        )
 
         return (
-            f"⚖️【{company_name} ({stock_id})】估值指標\n"
-            f"━━━━━━━━━━━━━━\n"
-            f"🔹 本益比 (PE)：{pe_str}\n"
-            f"🔹 每股盈餘 (EPS)：{eps_str}\n"
-            f"━━━━━━━━━━━━━━\n"
-            f"※ 數據來源：Yahoo Finance 財經資料庫"
+            f"⚖️【{company_name}（{stock_id}）估值】\n"
+            "━━━━━━━━━━━━━━\n"
+            f"💵 最新可用股價：{latest_price:,.2f}"
+            f"{currency_text}\n"
+            f"📅 股價資料日期：{price_date}\n\n"
+            f"🧾 最近四季 EPS 合計：{eps_ttm:.2f}\n"
+            f"{eps_detail}\n"
+            "━━━━━━━━━━━━━━\n"
+            f"📈 本益比（PE）：{pe_text}\n"
+            "計算方式：最新可用股價 ÷ 最近四季 EPS 合計\n"
+            "📌 EPS 與股價的資料日期可能不同，"
+            "請以各自公布日期為準。"
         )
+
     except Exception as exc:
         logger.exception("估值查詢錯誤")
-        return f"查詢代碼「{stock_id}」的估值時發生異常。"
+        return (
+            f"⚠️ 查詢 {stock_id} 的估值時發生錯誤："
+            f"{type(exc).__name__}"
+        )
 
 
 # ==================================================
