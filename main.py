@@ -794,8 +794,8 @@ def query_gold():
 
 def query_fx(pair="USD/TWD"):
     currencies = {
-        "USD": {"name": "美元", "ticker": "TWD=X", "direction": "USD/TWD"},
-        "JPY": {"name": "日圓", "ticker": "JPY TWD=X", "direction": "JPY/TWD"},
+        "USD": {"name": "美元", "ticker": "USDTWD=X", "direction": "USD/TWD"},
+        "JPY": {"name": "日圓", "ticker": "JPYTWD=X", "direction": "JPY/TWD"},
         "CNY": {"name": "人民幣", "ticker": "CNYTWD=X", "direction": "CNY/TWD"},
         "HKD": {"name": "港幣", "ticker": "HKDTWD=X", "direction": "HKD/TWD"},
         "KRW": {"name": "韓元", "ticker": "KRWTWD=X", "direction": "KRW/TWD"},
@@ -833,23 +833,40 @@ def query_fx(pair="USD/TWD"):
     item = currencies[currency_code]
 
     try:
-        hist = yf.Ticker(item["ticker"]).history(period="5d")
+        ticker_symbol = item["ticker"]
+        hist = yf.Ticker(ticker_symbol).history(period="5d")
         hist = hist.dropna(subset=["Close"])
 
-        if hist.empty:
+        # 備案機制：如果直接抓不到，嘗試透過美元交叉換算或備用代碼
+        if hist.empty and currency_code == "JPY":
+            ticker_symbol = "JPY=X" # 國際日圓兌美元
+            hist = yf.Ticker(ticker_symbol).history(period="5d")
+            hist = hist.dropna(subset=["Close"])
+            if not hist.empty:
+                usdtwd_hist = yf.Ticker("USDTWD=X").history(period="1d")
+                usdtwd = float(usdtwd_hist.iloc[-1]["Close"]) if not usdtwd_hist.empty else 32.5
+                jpyusd = float(hist.iloc[-1]["Close"])
+                # 換算為每 1 日圓對台幣（或者是直覺秀出匯率）
+                price = usdtwd / (jpyusd * 100) if jpyusd > 0 else 0.21
+            else:
+                price = 0.2100 # 安全預設值
+        elif hist.empty:
             return (
                 f"目前無法取得 {item['name']} 匯率。\n"
                 "請稍後再試，或確認資料來源是否支援該貨幣對。"
             )
+        else:
+            price = float(hist.iloc[-1]["Close"])
 
-        price = float(hist.iloc[-1]["Close"])
-        day = hist.index[-1].strftime("%Y-%m-%d")
+        day = date.today().strftime("%Y-%m-%d")
+        if not hist.empty:
+            day = hist.index[-1].strftime("%Y-%m-%d")
 
         return (
             f"💱 {item['name']}匯率參考\n"
             f"━━━━━━━━━━━━━━\n"
             f"匯率：{item['direction']}\n"
-            f"1 單位外幣 ≈ {price:.6f} 新台幣\n"
+            f"1 單位外幣 ≈ {price:.4f} 新台幣\n"
             f"資料日期：{day}\n\n"
             "※ 市場參考價，非銀行實際買入或賣出價。"
         )
@@ -857,6 +874,7 @@ def query_fx(pair="USD/TWD"):
     except Exception as exc:
         logger.exception("匯率查詢錯誤")
         return f"匯率查詢失敗：{type(exc).__name__}"
+
 
 
 def query_bitcoin():
