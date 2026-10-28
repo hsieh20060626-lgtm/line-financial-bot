@@ -26,7 +26,7 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
-from news import fetch_news, news_card, query_news, news_recipients
+from news import fetch_news, news_card, query_news
 
 
 # ==================================================
@@ -991,6 +991,20 @@ def query_foreign_shareholding(symbol):
 # ==================================================
 # 10.5 財經新聞推播（新聞內容在 news.py）
 # ==================================================
+def news_recipients():
+    """從 Google 試算表動態讀取所有收新聞的人的 UID。"""
+    sheet_url = os.getenv("GOOGLE_SHEET_WEB_APP_URL", "")
+    if not sheet_url:
+        raw = os.getenv("NEWS_USER_IDS", "")
+        return [uid.strip() for uid in raw.split(",") if uid.strip()]
+
+    try:
+        response = requests.post(sheet_url, json={"action": "get"}, timeout=10)
+        data = response.json()
+        return data.get("userIds", [])
+    except Exception as exc:
+        logger.warning("從 Google 試算表讀取收件人失敗：%s", exc)
+        return []
 
 def push_news():
     """把今日新聞推播給 NEWS_USER_IDS 裡的所有人，回傳結果說明文字。"""
@@ -1153,12 +1167,21 @@ def callback():
 
     return "OK"
 
-
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     user_text = event.message.text or ""
     try:
         user_id = getattr(event.source, "user_id", None)
+
+        # 💡 新增這段：自動把新朋友的 UID 傳送到 Google 試算表存檔
+        if user_id:
+            sheet_url = os.getenv("GOOGLE_SHEET_WEB_APP_URL", "")
+            if sheet_url:
+                try:
+                    requests.post(sheet_url, json={"action": "add", "userId": user_id}, timeout=3)
+                except Exception:
+                    pass
+
         content, quick = handle_command(user_text, user_id=user_id)
         send_reply(event.reply_token, content, quick_replies=quick)
     except Exception:
