@@ -17,6 +17,7 @@ from linebot.v3.messaging import (
     MessagingApi,
     ReplyMessageRequest,
     MulticastRequest,
+    PushMessageRequest,
     TextMessage,
     FlexMessage,
     FlexContainer,
@@ -26,7 +27,8 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
-from news import fetch_news, news_card, query_news
+from news import fetch_news, news_card, query_news, news_recipients
+from usage import describe_command
 
 
 # ==================================================
@@ -991,20 +993,6 @@ def query_foreign_shareholding(symbol):
 # ==================================================
 # 10.5 財經新聞推播（新聞內容在 news.py）
 # ==================================================
-def news_recipients():
-    """從 Google 試算表動態讀取所有收新聞的人的 UID。"""
-    sheet_url = os.getenv("GOOGLE_SHEET_WEB_APP_URL", "")
-    if not sheet_url:
-        raw = os.getenv("NEWS_USER_IDS", "")
-        return [uid.strip() for uid in raw.split(",") if uid.strip()]
-
-    try:
-        response = requests.post(sheet_url, json={"action": "get"}, timeout=10)
-        data = response.json()
-        return data.get("userIds", [])
-    except Exception as exc:
-        logger.warning("從 Google 試算表讀取收件人失敗：%s", exc)
-        return []
 
 def push_news():
     """把今日新聞推播給 NEWS_USER_IDS 裡的所有人，回傳結果說明文字。"""
@@ -1130,6 +1118,56 @@ def handle_command(text, user_id=None):
 
 
 # ==================================================
+# 11.5 使用紀錄：誰查了什麼（寫進 Logs，可選擇推播給管理員）
+# ==================================================
+
+def get_display_name(user_id):
+    """用 LINE 取得使用者的顯示名稱（快取 24 小時），取不到就用 ID 末四碼代替。"""
+    if not user_id:
+        return "未知使用者"
+
+    key = ("display_name", user_id)
+    hit = cache_get(key, 86400)
+    if hit:
+        return hit
+
+    try:
+        with ApiClient(configuration) as api_client:
+            profile = MessagingApi(api_client).get_profile(user_id)
+        name = profile.display_name or f"使用者{user_id[-4:]}"
+        cache_set(key, name)
+        return name
+    except Exception as exc:
+        logger.warning("取得使用者名稱失敗：%s", exc)
+        return f"使用者{user_id[-4:]}"
+
+
+def record_usage(user_id, text):
+    """
+    寫一行紀錄，例如：「某某 查詢 2330 股價」。
+    若有設定環境變數 ADMIN_USER_ID，會把值得注意的查詢推播給管理員
+    （每次推播都會佔用 LINE 訊息額度）。
+    """
+    try:
+        name = get_display_name(user_id)
+        description, notable = describe_command(text)
+        line = f"{name} {description}"
+        logger.info("📝 使用紀錄：%s", line)
+
+        admin_id = os.getenv("ADMIN_USER_ID", "").strip()
+        if admin_id and notable and user_id and user_id != admin_id:
+            with ApiClient(configuration) as api_client:
+                MessagingApi(api_client).push_message(
+                    PushMessageRequest(
+                        to=admin_id,
+                        messages=[TextMessage(text=f"📝 {line}")],
+                    )
+                )
+    except Exception:
+        logger.exception("使用紀錄失敗")
+
+
+# ==================================================
 # 12. LINE Webhook
 # ==================================================
 
@@ -1167,21 +1205,12 @@ def callback():
 
     return "OK"
 
+
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     user_text = event.message.text or ""
+    user_id = getattr(event.source, "user_id", None)
     try:
-        user_id = getattr(event.source, "user_id", None)
-
-        # 💡 新增這段：自動把新朋友的 UID 傳送到 Google 試算表存檔
-        if user_id:
-            sheet_url = os.getenv("GOOGLE_SHEET_WEB_APP_URL", "")
-            if sheet_url:
-                try:
-                    requests.post(sheet_url, json={"action": "add", "userId": user_id}, timeout=3)
-                except Exception:
-                    pass
-
         content, quick = handle_command(user_text, user_id=user_id)
         send_reply(event.reply_token, content, quick_replies=quick)
     except Exception:
@@ -1190,6 +1219,8 @@ def handle_message(event):
             send_reply(event.reply_token, "系統暫時忙碌，請稍後再試。", quick_replies=quick_reply_items())
         except Exception:
             logger.exception("備用回覆也失敗")
+    finally:
+        record_usage(user_id, user_text)
 
 
 # ==================================================
