@@ -1410,22 +1410,57 @@ _executor = ThreadPoolExecutor(max_workers=8)
 def handle_message(event):
     user_text = event.message.text or ""
     user_id = getattr(event.source, "user_id", None)
+
+    # 第一階段：處理使用者指令
     try:
-        future = _executor.submit(handle_command, user_text, user_id=user_id)
+        future = _executor.submit(
+            handle_command,
+            user_text,
+            user_id=user_id
+        )
+
         try:
             content, quick = future.result(timeout=REPLY_DEADLINE)
+
         except FutureTimeout:
-            # 資料來源太慢：趁回覆權杖還有效，先回覆「稍後再試」。
-            # 查詢會在背景繼續跑並存進快取，使用者再傳一次通常就是秒回。
-            logger.warning("查詢超過 %d 秒，先回覆稍後再試：%s", REPLY_DEADLINE, user_text)
+            # 查詢超過 20 秒，先回覆稍後再試
+            logger.warning(
+                "查詢超過 %d 秒，先回覆稍後再試：%s",
+                REPLY_DEADLINE,
+                user_text
+            )
             content, quick = SLOW_TEXT, quick_reply_items()
-        send_reply(event.reply_token, content, quick_replies=quick)
+
     except Exception:
-        logger.exception("處理訊息失敗")
-        try:
-            send_reply(event.reply_token, "系統暫時忙碌，請稍後再試。", quick_replies=quick_reply_items())
-        except Exception:
-            logger.exception("備用回覆也失敗")
+        # 查詢本身發生錯誤，準備一則備用訊息
+        logger.exception("查詢處理失敗")
+        content = "系統暫時忙碌，請稍後再試。"
+        quick = quick_reply_items()
+
+    # 第二階段：只嘗試回覆一次
+    try:
+        send_reply(
+            event.reply_token,
+            content,
+            quick_replies=quick
+        )
+
+    except Exception as exc:
+        error_detail = (
+            f"{getattr(exc, 'status', '')} "
+            f"{getattr(exc, 'body', '')} {exc}"
+        )
+
+        if "Invalid reply token" in error_detail:
+            logger.warning(
+                "LINE Reply Token 已失效，不再使用同一 Token 重試：%s",
+                user_text
+            )
+        else:
+            logger.exception(
+                "LINE 回覆失敗，不再使用同一 Reply Token 重試"
+            )
+
     finally:
         record_usage(user_id, user_text)
 
