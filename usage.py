@@ -46,6 +46,22 @@ def describe_command(text):
     if low in ("其他資訊", "其他", "other_info"):
         return "開啟其他資訊選單", False
 
+    m = re.fullmatch(r"(法人|外資|投信)(買超|賣超)前五", t)
+    if m:
+        return f"查看{m.group(1)}{m.group(2)}前五名", True
+
+    if low in ("買超前五", "買超排行"):
+        return "查看法人買超前五名", True
+
+    if low in ("賣超前五", "賣超排行"):
+        return "查看法人賣超前五名", True
+
+    if low in ("三大法人", "三大法人買賣超", "三大法人買超賣超", "法人動向"):
+        return "查看三大法人全市場買賣超", True
+
+    if low in ("籌碼", "法人"):
+        return "點選籌碼功能", False
+
     if low in ("新聞", "財經新聞", "news"):
         return "查看財經新聞", True
 
