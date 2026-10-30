@@ -3,6 +3,7 @@ import re
 import time
 import hmac
 import logging
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import date, timedelta
 
 import requests
@@ -29,6 +30,7 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
 from news import fetch_news, news_card, query_news, news_recipients
 from usage import describe_command
+from chips import fetch_top_institutional, fetch_market_summary
 
 
 # ==================================================
@@ -58,6 +60,7 @@ configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 DISCLAIMER = "※ 資料僅供參考，非投資建議。"
+SLOW_TEXT = "資料來源回應比較慢，川投顧還在背景幫你查。請過 30 秒再傳一次同樣的指令，通常就會秒回！"
 
 # 台灣習慣：紅色＝上漲／買超，綠色＝下跌／賣超
 COLOR_UP = "#C0392B"
@@ -94,7 +97,7 @@ def fetch_history(symbol, ttl=300, **kwargs):
     if hit is not None:
         return hit
 
-    hist = yf.Ticker(symbol).history(auto_adjust=False, **kwargs)
+    hist = yf.Ticker(symbol).history(auto_adjust=False, timeout=8, **kwargs)
     if hist.empty or "Close" not in hist.columns:
         return hist.iloc[0:0]
     hist = hist.dropna(subset=["Close"])
@@ -608,7 +611,12 @@ def help_text():
         "自訂 2330 2026-01-01 2026-10-01\n\n"
         "🏦【三、三大法人與籌碼】\n"
         "籌碼 2330\n"
-        "外資 2330\n\n"
+        "外資 2330\n"
+        "三大法人（全市場買賣超金額）\n"
+        "法人買超前五、法人賣超前五\n"
+        "外資買超前五、外資賣超前五\n"
+        "投信買超前五、投信賣超前五\n"
+        "（全市場排行，上市個股）\n\n"
         "🧮【四、本益比與 EPS】\n"
         "本益比 2330\n"
         "本益比 AAPL\n\n"
@@ -944,6 +952,8 @@ def query_institutional(symbol):
             f"{foreign_ratio:.2f}%" if foreign_ratio is not None else "目前無資料"
         )
 
+        streaks = institutional_streaks(institutional_data)
+
         rows = [
             R("外資買賣超", format_net_buy(foreign_net), color=net_color(foreign_net)),
             R("投信買賣超", format_net_buy(trust_net), color=net_color(trust_net)),
@@ -952,8 +962,14 @@ def query_institutional(symbol):
             R("三大法人合計", format_net_buy(total_net), big=True, color=net_color(total_net)),
             SEP,
             R("外資持股比例", ratio_text),
+            SEP,
+            R("外資連續", streak_text(streaks["foreign"]), color=streak_color(streaks["foreign"])),
+            R("投信連續", streak_text(streaks["trust"]), color=streak_color(streaks["trust"])),
         ]
-        footer = [f"資料日期：{institutional_date or '目前無資料'}"]
+        footer = [
+            f"資料日期：{institutional_date or '目前無資料'}",
+            "連續天數以近 30 天資料計算",
+        ]
 
         return make_card(
             f"🏦 {stock_display(stock_id)}",
@@ -989,6 +1005,174 @@ def query_foreign_shareholding(symbol):
     return make_card(
         f"🌐 {stock_display(stock_id)}", "外資持股", COLOR_INFO, rows, footer
     )
+
+
+def chip_quick():
+    """籌碼相關查詢後的選單：切換各種買超／賣超排行。"""
+    return build_quick([
+        ("三大法人合計", "三大法人"),
+        ("法人買超前五", "法人買超前五"),
+        ("法人賣超前五", "法人賣超前五"),
+        ("外資買超前五", "外資買超前五"),
+        ("外資賣超前五", "外資賣超前五"),
+        ("投信買超前五", "投信買超前五"),
+        ("投信賣超前五", "投信賣超前五"),
+        ("完整選單", "選單"),
+    ])
+
+
+# 指令 -> (排行種類, 買超或賣超)
+RANK_COMMANDS = {
+    "法人買超前五": ("total", "buy"), "買超前五": ("total", "buy"), "買超排行": ("total", "buy"),
+    "法人賣超前五": ("total", "sell"), "賣超前五": ("total", "sell"), "賣超排行": ("total", "sell"),
+    "外資買超前五": ("foreign", "buy"), "外資賣超前五": ("foreign", "sell"),
+    "投信買超前五": ("trust", "buy"), "投信賣超前五": ("trust", "sell"),
+}
+
+# 排行種類 -> (名稱, 卡片副標題)
+RANK_TITLES = {
+    "total": ("法人", "三大法人合計買賣超"),
+    "foreign": ("外資", "外陸資買賣超（不含外資自營商）"),
+    "trust": ("投信", "投信買賣超"),
+}
+
+
+def format_amount(net):
+    """買賣超金額（億元）的文字。"""
+    if net is None:
+        return "目前無資料"
+    if net > 0:
+        return f"買超 +{net:,.2f} 億元"
+    if net < 0:
+        return f"賣超 {net:,.2f} 億元"
+    return "持平 0 億元"
+
+
+def query_market_summary():
+    """全市場三大法人買賣超金額（外資、投信、自營商、合計）。"""
+    try:
+        result = fetch_market_summary()
+        if not result:
+            return "查不到最近的三大法人買賣金額，請稍後再試。"
+
+        total = result["total"]
+        rows = [
+            R("外資買賣超", format_amount(result["foreign"]), color=net_color(result["foreign"])),
+            R("投信買賣超", format_amount(result["trust"]), color=net_color(result["trust"])),
+            R("自營商買賣超", format_amount(result["dealer"]), color=net_color(result["dealer"])),
+            SEP,
+            R("三大法人合計", format_amount(total), big=True, color=net_color(total)),
+        ]
+        footer = [
+            f"資料日期：{result['date']}",
+            "資料來源：台灣證券交易所（上市市場）",
+            "外資含外資自營商；自營商含自行買賣與避險",
+        ]
+        icon = "🔴" if total > 0 else "🟢" if total < 0 else "⚪"
+        return make_card(
+            f"{icon} 三大法人買賣超",
+            "全市場（上市）買賣金額",
+            trend_color(total),
+            rows,
+            footer,
+        )
+    except Exception:
+        logger.exception("三大法人摘要查詢錯誤")
+        return "查詢三大法人買賣金額時發生異常。"
+
+
+def query_top_institutional(side, kind="total"):
+    """全市場買超／賣超前五名（上市個股）。side：'buy' 或 'sell'；kind：'total'、'foreign'、'trust'。"""
+    try:
+        result = fetch_top_institutional(kind)
+        if not result:
+            return "查不到最近的法人買賣超排行，請稍後再試。"
+
+        is_buy = side == "buy"
+        items = result["buy"] if is_buy else result["sell"]
+        if not items:
+            return "這個交易日沒有符合條件的資料。"
+
+        label, subtitle = RANK_TITLES[kind]
+        rows = [
+            R(f"{i}. {item['code']} {item['name']}", format_net_buy(item["net"]), color=net_color(item["net"]))
+            for i, item in enumerate(items, start=1)
+        ]
+        footer = [
+            f"資料日期：{result['date']}",
+            "資料來源：台灣證券交易所（上市個股，不含 ETF）",
+        ]
+        return make_card(
+            f"🔴 {label}買超前五名" if is_buy else f"🟢 {label}賣超前五名",
+            subtitle,
+            COLOR_UP if is_buy else COLOR_DOWN,
+            rows,
+            footer,
+        )
+    except Exception:
+        logger.exception("法人排行查詢錯誤")
+        return "查詢法人排行時發生異常。"
+
+
+def _streak(values):
+    """values：由新到舊的每日買賣超；回傳 (方向, 連續天數, 是否已用完所有資料)。"""
+    values = [v for v in values if v is not None]
+    if not values:
+        return (None, 0, False)
+
+    first = values[0]
+    if first == 0:
+        return ("flat", 0, False)
+
+    direction = "buy" if first > 0 else "sell"
+    days = 0
+    for v in values:
+        if v != 0 and (v > 0) == (first > 0):
+            days += 1
+        else:
+            return (direction, days, False)
+    return (direction, days, True)
+
+
+def institutional_streaks(rows):
+    """用 FinMind 近 30 天資料，算外資、投信最近連續買超／賣超幾個交易日。"""
+    by_date = {}
+    for row in rows or []:
+        if not isinstance(row, dict) or not row.get("date"):
+            continue
+        buy = to_number(row.get("buy"))
+        sell = to_number(row.get("sell"))
+        if buy is None or sell is None:
+            continue
+
+        name = str(row.get("name", ""))
+        bucket = by_date.setdefault(str(row["date"]), {"foreign": None, "trust": None})
+        net = buy - sell
+        if "Foreign" in name and "Self" not in name:
+            bucket["foreign"] = (bucket["foreign"] or 0) + net
+        elif "Investment_Trust" in name:
+            bucket["trust"] = (bucket["trust"] or 0) + net
+
+    dates = sorted(by_date, reverse=True)
+    return {who: _streak([by_date[d][who] for d in dates]) for who in ("foreign", "trust")}
+
+
+def streak_text(streak):
+    direction, days, capped = streak
+    if direction is None:
+        return "目前無資料"
+    if direction == "flat":
+        return "無連續"
+    word = "買超" if direction == "buy" else "賣超"
+    return f"連續{word} {days} 日" + ("以上" if capped else "")
+
+
+def streak_color(streak):
+    if streak[0] == "buy":
+        return COLOR_UP
+    if streak[0] == "sell":
+        return COLOR_DOWN
+    return None
 
 
 # ==================================================
@@ -1055,6 +1239,15 @@ def handle_command(text, user_id=None):
     if command in ("其他資訊", "其他", "other_info"):
         return other_info_text(), default_quick
 
+    # 全市場 法人／外資／投信 買超、賣超前五名
+    if command in RANK_COMMANDS:
+        kind, side = RANK_COMMANDS[command]
+        return query_top_institutional(side, kind), chip_quick()
+    if command in ("三大法人", "三大法人買賣超", "三大法人買超賣超", "法人動向"):
+        return query_market_summary(), chip_quick()
+    if command in ("籌碼", "法人"):
+        return "查個股請輸入「籌碼 2330」，或點下方按鈕看全市場法人買賣超。", chip_quick()
+
     # 黃金、外匯、比特幣：先顯示今日漲跌，下方給時間單位按鈕
     if command in ASSET_ALIASES:
         return query_today(text), period_quick(alias_for(text))
@@ -1079,7 +1272,7 @@ def handle_command(text, user_id=None):
     # 籌碼
     chip_match = re.fullmatch(r"(?:籌碼|法人|三大法人)\s+([A-Za-z0-9.^=_-]+)", text, flags=re.IGNORECASE)
     if chip_match:
-        return query_institutional(chip_match.group(1)), default_quick
+        return query_institutional(chip_match.group(1)), chip_quick()
 
     # 外資持股
     foreign_match = re.fullmatch(r"外資\s+(\d{4,6}[A-Za-z]?)", text)
@@ -1207,12 +1400,25 @@ def callback():
     return "OK"
 
 
+# LINE 的回覆權杖有時效，查詢拖太久就會失效（Invalid reply token）。
+# 因此查詢交給背景執行緒，超過期限就先回覆，不讓使用者乾等。
+REPLY_DEADLINE = 20
+_executor = ThreadPoolExecutor(max_workers=8)
+
+
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     user_text = event.message.text or ""
     user_id = getattr(event.source, "user_id", None)
     try:
-        content, quick = handle_command(user_text, user_id=user_id)
+        future = _executor.submit(handle_command, user_text, user_id=user_id)
+        try:
+            content, quick = future.result(timeout=REPLY_DEADLINE)
+        except FutureTimeout:
+            # 資料來源太慢：趁回覆權杖還有效，先回覆「稍後再試」。
+            # 查詢會在背景繼續跑並存進快取，使用者再傳一次通常就是秒回。
+            logger.warning("查詢超過 %d 秒，先回覆稍後再試：%s", REPLY_DEADLINE, user_text)
+            content, quick = SLOW_TEXT, quick_reply_items()
         send_reply(event.reply_token, content, quick_replies=quick)
     except Exception:
         logger.exception("處理訊息失敗")
