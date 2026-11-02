@@ -26,7 +26,7 @@ from linebot.v3.messaging import (
     QuickReplyItem,
     MessageAction,
 )
-from linebot.v3.webhooks import MessageEvent, TextMessageContent
+from linebot.v3.webhooks import MessageEvent, TextMessageContent, PostbackEvent
 
 from news import fetch_news, news_card, query_news, news_recipients
 from usage import describe_command
@@ -291,6 +291,7 @@ def quick_reply_items():
         ("本益比/EPS", "本益比 2330"),
         ("歷史股價", "歷史 2330"),
         ("財經新聞", "新聞"),
+        ("全球指數", "全球指數"),
         ("其他資訊", "other_info"),
     ])
 
@@ -475,6 +476,17 @@ ASSETS = {
     "CNY": {"name": "人民幣", "symbol": "CNYTWD=X", "pair": "CNY/TWD", "kind": "fx", "icon": "💱", "decimals": 4, "currency": ""},
     "GOLD": {"name": "黃金", "symbol": "GC=F", "pair": "美元／盎司", "kind": "commodity", "icon": "🥇", "decimals": 2, "currency": "USD"},
     "BTC": {"name": "比特幣", "symbol": "BTC-USD", "pair": "BTC/USD", "kind": "crypto", "icon": "₿", "decimals": 2, "currency": "USD"},
+    # ---- 各國指數 ----
+    "TWII": {"name": "加權指數", "symbol": "^TWII", "pair": "TAIEX", "kind": "index", "icon": "📊", "decimals": 2, "currency": ""},
+    "N225": {"name": "日經", "symbol": "^N225", "pair": "Nikkei 225", "kind": "index", "icon": "📊", "decimals": 2, "currency": ""},
+    "KOSPI": {"name": "韓股", "symbol": "^KS11", "pair": "KOSPI", "kind": "index", "icon": "📊", "decimals": 2, "currency": ""},
+    "SSEC": {"name": "A股", "symbol": "000001.SS", "pair": "上證指數", "kind": "index", "icon": "📊", "decimals": 2, "currency": ""},
+    "SZI": {"name": "深證", "symbol": "399001.SZ", "pair": "深證成指", "kind": "index", "icon": "📊", "decimals": 2, "currency": ""},
+    "CSI300": {"name": "滬深300", "symbol": "000300.SS", "pair": "CSI 300", "kind": "index", "icon": "📊", "decimals": 2, "currency": ""},
+    "SPX": {"name": "標普500", "symbol": "^GSPC", "pair": "S&P 500", "kind": "index", "icon": "📊", "decimals": 2, "currency": ""},
+    "DJI": {"name": "道瓊", "symbol": "^DJI", "pair": "Dow Jones", "kind": "index", "icon": "📊", "decimals": 2, "currency": ""},
+    "IXIC": {"name": "那斯達克", "symbol": "^IXIC", "pair": "NASDAQ", "kind": "index", "icon": "📊", "decimals": 2, "currency": ""},
+    "SOX": {"name": "費半", "symbol": "^SOX", "pair": "費城半導體", "kind": "index", "icon": "📊", "decimals": 2, "currency": ""},
 }
 
 ASSET_ALIASES = {
@@ -484,6 +496,16 @@ ASSET_ALIASES = {
     "人民幣": "CNY", "cny": "CNY",
     "黃金": "GOLD", "gold": "GOLD",
     "比特幣": "BTC", "btc": "BTC", "bitcoin": "BTC",
+    "加權": "TWII", "加權指數": "TWII", "大盤": "TWII", "twii": "TWII", "taiex": "TWII",
+    "日經": "N225", "日經225": "N225", "日股": "N225", "n225": "N225", "nikkei": "N225",
+    "韓股": "KOSPI", "韓國": "KOSPI", "kospi": "KOSPI",
+    "a股": "SSEC", "上證": "SSEC", "上證指數": "SSEC", "陸股": "SSEC",
+    "深證": "SZI", "深證成指": "SZI",
+    "滬深300": "CSI300", "csi300": "CSI300",
+    "標普": "SPX", "標普500": "SPX", "sp500": "SPX", "spx": "SPX",
+    "道瓊": "DJI", "道瓊工業": "DJI", "dji": "DJI",
+    "那斯達克": "IXIC", "納斯達克": "IXIC", "nasdaq": "IXIC", "ixic": "IXIC",
+    "費半": "SOX", "費城半導體": "SOX", "sox": "SOX",
 }
 
 
@@ -608,7 +630,8 @@ def help_text():
         "📉【二、歷史股價與漲跌】\n"
         "歷史 2330\n"
         "2330 一個月\n"
-        "自訂 2330 2026-01-01 2026-10-01\n\n"
+        "自訂日期：點「自訂時間」按鈕，用選擇器選日期\n"
+        "（電腦版請輸入：自訂 2330 2026-01-01 2026-10-01）\n\n"
         "🏦【三、三大法人與籌碼】\n"
         "籌碼 2330\n"
         "外資 2330\n"
@@ -627,7 +650,11 @@ def help_text():
         "（例：美元 一週）\n\n"
         "₿【七、比特幣】\n"
         "比特幣 / BTC\n\n"
-        "📰【八、財經新聞】\n"
+        "🌍【八、各國指數】\n"
+        "加權指數、台指期、日經、韓股、A股\n"
+        "美股（四大指數）、全球指數\n"
+        "（例：日經 一個月、標普500、費半）\n\n"
+        "📰【九、財經新聞】\n"
         "新聞（每天早上也會自動推播給訂閱者）\n"
         "我的ID（取得你的 LINE ID）\n\n"
         "指令跟股票代號中間要『空格』！！！\n\n"
@@ -646,17 +673,91 @@ def other_info_text():
     )
 
 
-def custom_period_prompt(token):
+CUSTOM_MIN_DATE = "2000-01-01"
+
+
+def custom_picker_card(token, start=None, warning=None):
+    """
+    自訂日期卡片：用 LINE 的日期選擇器選日期，不用手打。
+    第 1 步選開始日期（資料帶 cs|代碼），第 2 步選結束日期（資料帶 ce|代碼|開始日期）。
+    """
     alias = alias_for(token)
-    end = date.today()
-    start = end - timedelta(days=30)
-    return (
+    today = date.today().isoformat()
+    max_date = (date.today() + timedelta(days=1)).isoformat()  # 多給一天，避免時區差造成選不到今天
+
+    if start is None:
+        step_text = "第 1 步：請選擇開始日期"
+        label = "選擇開始日期"
+        data = f"cs|{token}"
+        min_date = CUSTOM_MIN_DATE
+        initial = (date.today() - timedelta(days=30)).isoformat()
+    else:
+        step_text = f"開始日期：{start}\n第 2 步：請選擇結束日期"
+        label = "選擇結束日期"
+        data = f"ce|{token}|{start}"
+        min_date = start
+        initial = min(max(start, today), max_date)
+
+    example_end = date.today()
+    example_start = example_end - timedelta(days=30)
+    typed_hint = f"自訂 {alias} {example_start.isoformat()} {example_end.isoformat()}"
+
+    body = []
+    if warning:
+        body.append({"type": "text", "text": warning, "size": "sm", "color": COLOR_UP, "wrap": True})
+    body += [
+        {"type": "text", "text": step_text, "size": "md", "weight": "bold", "color": "#222222", "wrap": True},
+        {
+            "type": "button",
+            "style": "primary",
+            "color": COLOR_INFO,
+            "action": {
+                "type": "datetimepicker",
+                "label": label,
+                "data": data,
+                "mode": "date",
+                "initial": initial,
+                "min": min_date,
+                "max": max_date,
+            },
+        },
+        {
+            "type": "text",
+            "text": f"電腦版 LINE 沒有日期選擇器，請改輸入：\n{typed_hint}",
+            "size": "xs",
+            "color": "#888888",
+            "wrap": True,
+        },
+    ]
+
+    bubble = {
+        "type": "bubble",
+        "size": "mega",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "backgroundColor": COLOR_INFO,
+            "paddingAll": "lg",
+            "contents": [
+                {"type": "text", "text": "📅 自訂日期區間", "color": "#FFFFFF", "weight": "bold", "size": "xl"},
+                {"type": "text", "text": alias, "color": "#FFFFFF", "size": "sm", "margin": "sm", "wrap": True},
+            ],
+        },
+        "body": {"type": "box", "layout": "vertical", "paddingAll": "lg", "spacing": "md", "contents": body},
+    }
+
+    plain = (
         "📅 自訂時間查詢\n"
         "請依下列格式輸入（日期格式 YYYY-MM-DD）：\n\n"
         f"自訂 {alias} 開始日期 結束日期\n\n"
-        "範例：\n"
-        f"自訂 {alias} {start.isoformat()} {end.isoformat()}"
+        f"範例：\n{typed_hint}"
     )
+    return {"bubble": bubble, "alt": f"📅 自訂日期區間｜{alias}", "text": plain}
+
+
+def custom_period_prompt(token):
+    """使用者按「自訂時間」：先顯示選開始日期的卡片。"""
+    return custom_picker_card(token)
 
 
 # ==================================================
@@ -1007,6 +1108,141 @@ def query_foreign_shareholding(symbol):
     )
 
 
+# ==================================================
+# 9.5 各國指數總覽與台指期
+# ==================================================
+
+INDEX_GROUPS = {
+    "us": ("🌎 美股指數", ["SPX", "DJI", "IXIC", "SOX"]),
+    "asia": ("🌏 亞股指數", ["TWII", "N225", "KOSPI", "SSEC"]),
+    "global": ("🌐 全球指數", ["TWII", "N225", "KOSPI", "SSEC", "SPX", "DJI", "IXIC", "SOX"]),
+}
+
+INDEX_GROUP_ALIASES = {
+    "美股": "us", "美股指數": "us",
+    "亞股": "asia", "亞股指數": "asia",
+    "全球指數": "global", "指數": "global", "世界指數": "global",
+}
+
+FUTURES_ALIASES = ("台指期", "台指", "大台", "txf")
+
+_index_executor = ThreadPoolExecutor(max_workers=8)
+
+
+def index_quick():
+    """指數相關查詢後的選單。"""
+    return build_quick([
+        ("美股", "美股"),
+        ("加權指數", "加權指數"),
+        ("台指期", "台指期"),
+        ("日經", "日經"),
+        ("韓股", "韓股"),
+        ("A股", "A股"),
+        ("全球指數", "全球指數"),
+        ("完整選單", "選單"),
+    ])
+
+
+def _index_quote(code):
+    """取得單一指數的最新收盤、漲跌幅與日期；查不到回傳 None。"""
+    try:
+        hist = fetch_asset_history(ASSETS[code]["symbol"], period="5d")
+        if hist.empty:
+            return None
+        price = float(hist.iloc[-1]["Close"])
+        previous = float(hist.iloc[-2]["Close"]) if len(hist) >= 2 else price
+        pct = (price - previous) / previous * 100 if previous else 0.0
+        return {"price": price, "pct": pct, "date": hist.index[-1].strftime("%m/%d")}
+    except Exception as exc:
+        logger.warning("指數查詢失敗 (%s)：%s", code, exc)
+        return None
+
+
+def query_index_overview(group):
+    """多個指數一張卡片：最新收盤與漲跌幅（紅漲綠跌）。"""
+    title, codes = INDEX_GROUPS[group]
+    futures = [_index_executor.submit(_index_quote, code) for code in codes]
+
+    rows, missing = [], []
+    for code, future in zip(codes, futures):
+        try:
+            quote = future.result(timeout=15)
+        except Exception:
+            quote = None
+        name = ASSETS[code]["name"]
+        if not quote:
+            missing.append(name)
+            continue
+        rows.append(R(
+            f"{name}（{quote['date']}）",
+            f"{quote['price']:,.2f}　{quote['pct']:+.2f}%",
+            color=trend_color(quote["pct"]),
+        ))
+
+    if not rows:
+        return "指數報價暫時無法取得，請稍後再試。"
+
+    footer = ["各市場時區不同，日期以括號內為準；數字為最近一次收盤"]
+    if missing:
+        footer.append("暫時查不到：" + "、".join(missing))
+    return make_card(title, "最新收盤與漲跌幅", COLOR_INFO, rows, footer)
+
+
+def query_futures():
+    """台指期（TX）近月合約日盤收盤。資料來源：FinMind（台灣期貨交易所）。"""
+    try:
+        start_date = (date.today() - timedelta(days=10)).isoformat()
+        rows = get_finmind_data("TaiwanFuturesDaily", stock_id="TX", start_date=start_date)
+        rows = [r for r in rows if isinstance(r, dict) and r.get("date")]
+        if not rows:
+            return "台指期資料暫時無法取得，請稍後再試。"
+
+        latest = max(str(r["date"]) for r in rows)
+        day = [r for r in rows if str(r["date"]) == latest]
+
+        def is_month(r):  # 只取月份合約（排除週選與跨月價差）
+            code = str(r.get("contract_date", "")).strip()
+            return code.isdigit() and len(code) == 6
+
+        regular = [
+            r for r in day
+            if is_month(r) and str(r.get("trading_session", "")).lower() in ("position", "regular", "")
+        ]
+        pool = regular or [r for r in day if is_month(r)]
+        pool = [r for r in pool if (to_number(r.get("volume")) or 0) > 0] or pool
+        if not pool:
+            return "台指期資料暫時無法取得，請稍後再試。"
+
+        front = min(pool, key=lambda r: str(r["contract_date"]))
+        close = to_number(front.get("close"))
+        spread = to_number(front.get("spread"))
+        pct = to_number(front.get("spread_per"))
+        if close is None:
+            return "台指期資料暫時無法取得，請稍後再試。"
+        if pct is None and spread is not None and close - spread:
+            pct = spread / (close - spread) * 100
+
+        color = trend_color(pct if pct is not None else spread)
+        volume = to_number(front.get("volume"))
+        rows_out = [
+            R("收盤價", f"{close:,.0f}"),
+            R("漲跌", f"{spread:+,.0f}" if spread is not None else "目前無資料", color=color),
+            SEP,
+            R("漲跌幅", f"{pct:+.2f}%" if pct is not None else "目前無資料", big=True, color=color),
+            R("成交量", f"{volume:,.0f} 口" if volume is not None else "目前無資料"),
+        ]
+        footer = [
+            f"資料日期：{latest}（日盤）",
+            f"契約：臺股期貨 TX 近月 {front['contract_date']}",
+            "資料來源：FinMind（台灣期貨交易所），盤後約 16:30 更新",
+        ]
+        icon = "📉" if (pct is not None and pct < 0) else "📈"
+        return make_card(f"{icon} 台指期（近月）", "日盤收盤", color, rows_out, footer)
+    except Exception:
+        logger.exception("台指期查詢錯誤")
+        return "查詢台指期時發生異常。"
+
+
 def chip_quick():
     """籌碼相關查詢後的選單：切換各種買超／賣超排行。"""
     return build_quick([
@@ -1248,7 +1484,13 @@ def handle_command(text, user_id=None):
     if command in ("籌碼", "法人"):
         return "查個股請輸入「籌碼 2330」，或點下方按鈕看全市場法人買賣超。", chip_quick()
 
-    # 黃金、外匯、比特幣：先顯示今日漲跌，下方給時間單位按鈕
+    # 各國指數總覽（美股、亞股、全球指數）與台指期
+    if command in INDEX_GROUP_ALIASES:
+        return query_index_overview(INDEX_GROUP_ALIASES[command]), index_quick()
+    if command in FUTURES_ALIASES:
+        return query_futures(), index_quick()
+
+    # 黃金、外匯、比特幣、單一指數：先顯示今日漲跌，下方給時間單位按鈕
     if command in ASSET_ALIASES:
         return query_today(text), period_quick(alias_for(text))
 
@@ -1410,59 +1652,81 @@ _executor = ThreadPoolExecutor(max_workers=8)
 def handle_message(event):
     user_text = event.message.text or ""
     user_id = getattr(event.source, "user_id", None)
-
-    # 第一階段：處理使用者指令
     try:
-        future = _executor.submit(
-            handle_command,
-            user_text,
-            user_id=user_id
-        )
-
+        future = _executor.submit(handle_command, user_text, user_id=user_id)
         try:
             content, quick = future.result(timeout=REPLY_DEADLINE)
-
         except FutureTimeout:
-            # 查詢超過 20 秒，先回覆稍後再試
-            logger.warning(
-                "查詢超過 %d 秒，先回覆稍後再試：%s",
-                REPLY_DEADLINE,
-                user_text
-            )
+            # 資料來源太慢：趁回覆權杖還有效，先回覆「稍後再試」。
+            # 查詢會在背景繼續跑並存進快取，使用者再傳一次通常就是秒回。
+            logger.warning("查詢超過 %d 秒，先回覆稍後再試：%s", REPLY_DEADLINE, user_text)
             content, quick = SLOW_TEXT, quick_reply_items()
-
+        send_reply(event.reply_token, content, quick_replies=quick)
     except Exception:
-        # 查詢本身發生錯誤，準備一則備用訊息
-        logger.exception("查詢處理失敗")
-        content = "系統暫時忙碌，請稍後再試。"
-        quick = quick_reply_items()
-
-    # 第二階段：只嘗試回覆一次
-    try:
-        send_reply(
-            event.reply_token,
-            content,
-            quick_replies=quick
-        )
-
-    except Exception as exc:
-        error_detail = (
-            f"{getattr(exc, 'status', '')} "
-            f"{getattr(exc, 'body', '')} {exc}"
-        )
-
-        if "Invalid reply token" in error_detail:
-            logger.warning(
-                "LINE Reply Token 已失效，不再使用同一 Token 重試：%s",
-                user_text
-            )
-        else:
-            logger.exception(
-                "LINE 回覆失敗，不再使用同一 Reply Token 重試"
-            )
-
+        logger.exception("處理訊息失敗")
+        try:
+            send_reply(event.reply_token, "系統暫時忙碌，請稍後再試。", quick_replies=quick_reply_items())
+        except Exception:
+            logger.exception("備用回覆也失敗")
     finally:
         record_usage(user_id, user_text)
+
+
+def handle_postback_data(data, picked):
+    """
+    處理日期選擇器的回傳資料。回傳 (內容, 快速選單, 要記錄的文字或 None)。
+    cs|代碼        ：使用者選好開始日期 -> 顯示選結束日期的卡片
+    ce|代碼|開始日 ：使用者選好結束日期 -> 查詢並回覆
+    """
+    default_quick = quick_reply_items()
+    parts = (data or "").split("|")
+
+    if not picked or len(parts) < 2 or not valid_target(parts[1]):
+        return "這個操作已經失效，請重新輸入「選單」。", default_quick, None
+
+    action, token = parts[0], parts[1]
+    quick = period_quick(alias_for(token), include_today=True)
+
+    if action == "cs":
+        return custom_picker_card(token, start=picked), quick, None
+
+    if action == "ce" and len(parts) >= 3:
+        start = parts[2]
+        if picked <= start:
+            warning = "結束日期要晚於開始日期，請重新選擇。"
+            return custom_picker_card(token, start=start, warning=warning), quick, None
+        return (
+            query_custom_period(token, start, picked),
+            quick,
+            f"自訂 {token} {start} {picked}",
+        )
+
+    return "這個操作已經失效，請重新輸入「選單」。", default_quick, None
+
+
+@handler.add(PostbackEvent)
+def handle_postback(event):
+    user_id = getattr(event.source, "user_id", None)
+    data = event.postback.data or ""
+    picked = (event.postback.params or {}).get("date")
+    log_text = None
+    try:
+        future = _executor.submit(handle_postback_data, data, picked)
+        try:
+            content, quick, log_text = future.result(timeout=REPLY_DEADLINE)
+        except FutureTimeout:
+            logger.warning("日期查詢超過 %d 秒，先回覆稍後再試：%s", REPLY_DEADLINE, data)
+            content, quick = SLOW_TEXT, quick_reply_items()
+        send_reply(event.reply_token, content, quick_replies=quick)
+    except Exception:
+        logger.exception("處理日期選擇失敗")
+        try:
+            send_reply(event.reply_token, "系統暫時忙碌，請稍後再試。", quick_replies=quick_reply_items())
+        except Exception:
+            logger.exception("備用回覆也失敗")
+    finally:
+        if log_text:
+            record_usage(user_id, log_text)
 
 
 # ==================================================
