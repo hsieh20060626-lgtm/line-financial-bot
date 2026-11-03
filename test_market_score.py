@@ -37,6 +37,15 @@ class MarketScoreTests(unittest.TestCase):
         result, _ = score_market({"SP500": {"change_pct": 1.0}})
         self.assertEqual(result, 54.0)
 
+    def test_news_is_not_scored_without_ai_sentiment(self):
+        result = calculate_market_score({}, {}, {}, {}, [{"title": "recent news"}])
+        self.assertIsNone(result["dimensions"]["news"][0])
+
+    def test_news_uses_ai_sentiment_when_available(self):
+        result = calculate_market_score({}, {}, {}, {}, [{"title": "recent news"}], news_score=72)
+        self.assertEqual(result["dimensions"]["news"][0], 72.0)
+        self.assertIn("news", result["effective_weights"])
+
 
 if __name__ == "__main__":
     unittest.main()
