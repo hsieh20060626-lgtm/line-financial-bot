@@ -95,20 +95,21 @@ def score_market(data):
     return _clamp(50 + avg * 4), [f"相關指數平均漲跌 {avg:+.2f}%"]
 
 
-def score_news(items):
+def score_news(items, sentiment_score=None):
     if not items:
         return None, ["未取得可驗證的近期新聞"]
-    # Sentiment is intentionally neutral until a separately validated classifier is configured.
-    return 50.0, [f"取得 {len(items)} 則近期新聞；未啟用情緒模型，暫列中性"]
+    if sentiment_score is None:
+        return None, ["未取得 AI 新聞情緒分數；消息面不納入總分"]
+    return _clamp(sentiment_score), [f"AI 依 {len(items)} 則近期新聞評估消息面"]
 
 
-def calculate_market_score(technical, fundamental, chips, market, news):
+def calculate_market_score(technical, fundamental, chips, market, news, news_score=None):
     details = {
         "technical": score_technical(technical),
         "fundamental": score_fundamental(fundamental),
         "chips": score_chips(chips),
         "market": score_market(market),
-        "news": score_news(news),
+        "news": score_news(news, news_score),
     }
     available_weight = sum(WEIGHTS[k] for k, (score, _) in details.items() if score is not None)
     if not available_weight:
