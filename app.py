@@ -31,6 +31,7 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent, PostbackEvent
 from news import fetch_news, news_card, query_news, news_recipients
 from usage import describe_command
 from chips import fetch_top_institutional, fetch_market_summary
+from market_analysis import run_market_analysis, format_market_analysis
 
 
 # ==================================================
@@ -1507,6 +1508,16 @@ def handle_command(text, user_id=None):
 
     if command in ("其他資訊", "其他", "other_info"):
         return other_info_text(), default_quick
+
+    # 波段市場訊號分析：日 K＋週 K、五大面向加權評分
+    analysis_match = re.fullmatch(r"分析\\s+([A-Za-z0-9.^=_-]{1,20})", text, flags=re.IGNORECASE)
+    if analysis_match and valid_target(analysis_match.group(1)):
+        try:
+            result = run_market_analysis(analysis_match.group(1))
+            return format_market_analysis(result), default_quick
+        except Exception as exc:
+            logger.exception("市場分析失敗")
+            return f"市場分析暫時失敗：{type(exc).__name__}。請稍後再試。", default_quick
 
     # 全市場 法人／外資／投信 買超、賣超前五名
     if command in RANK_COMMANDS:
