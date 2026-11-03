@@ -11,8 +11,15 @@ from news import fetch_symbol_news, fetch_macro_news
 from market_score import calculate_market_score
 from ai_analysis import explain_analysis
 
+_CACHE = {}
+_CACHE_TTL = 300
+
 
 def run_market_analysis(user_symbol: str) -> dict:
+    cache_key = user_symbol.strip().upper()
+    cached = _CACHE.get(cache_key)
+    if cached and (datetime.now(timezone.utc) - cached['cached_at']).total_seconds() < _CACHE_TTL:
+        return cached['payload']
     market_data = fetch_daily_history(user_symbol, period="2y")
     ticker, market = market_data["symbol"], market_data["market"]
     technical = analyze_technical_indicators(market_data["history"])
@@ -32,6 +39,7 @@ def run_market_analysis(user_symbol: str) -> dict:
         "news": news_items, "score": score,
     }
     payload["ai"] = explain_analysis(payload)
+    _CACHE[cache_key] = {"cached_at": datetime.now(timezone.utc), "payload": payload}
     return payload
 
 
