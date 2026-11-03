@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+import time
+
 import requests
 
 
@@ -17,7 +19,7 @@ def explain_analysis(payload: dict) -> dict:
         }
 
     # Gemini 3.1 Flash-Lite is listed as a stable model with free-tier text tokens.
-    # Quotas still apply; the user must not enable paid billing for this free-only setup.
+    # Quotas still apply; this code never switches to a paid model or billing tier.
     model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite").strip()
     prompt = (
         "你是金融市場研究助理。只能根據 JSON 提供的數據與新聞做解讀，"
@@ -26,7 +28,7 @@ def explain_analysis(payload: dict) -> dict:
         "若沒有足夠新聞則為 null）、positive_factors（字串）、"
         "watch_items（字串）、risks（字串）、"
         "summary（繁體中文，包含日週線一致性與消息可能影響）。"
-        "不可提供個人化買賣指令；資料不足要明說。資料如下：\n"
+        "不可提供個人化買賣指令；資料不足要明說。資料如下：\\n"
         + json.dumps(payload, ensure_ascii=False, default=str)
     )
 
@@ -34,24 +36,36 @@ def explain_analysis(payload: dict) -> dict:
         "https://generativelanguage.googleapis.com/v1beta/"
         f"models/{model}:generateContent"
     )
+    request_body = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": 700,
+            "responseMimeType": "application/json",
+        },
+    }
+
     try:
-        response = requests.post(
-            url,
-            headers={
-                "x-goog-api-key": api_key,
-                "Content-Type": "application/json",
-            },
-            json={
-                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                "generationConfig": {
-                    "temperature": 0.2,
-                    "maxOutputTokens": 700,
-                    "responseMimeType": "application/json",
+        # A 503 is a temporary capacity issue, not evidence of a bad API key.
+        # Retry transient server errors once with a short backoff; keep the
+        # total wait bounded so a LINE webhook is less likely to time out.
+        response = None
+        for attempt in range(2):
+            response = requests.post(
+                url,
+                headers={
+                    "x-goog-api-key": api_key,
+                    "Content-Type": "application/json",
                 },
-            },
-            timeout=12,
-        )
-        response.raise_for_status()
+                json=request_body,
+                timeout=10,
+            )
+            if response.status_code in (500, 502, 503, 504) and attempt == 0:
+                time.sleep(1)
+                continue
+            response.raise_for_status()
+            break
+
         response_data = response.json()
         candidates = response_data.get("candidates") or []
         parts = (
@@ -68,9 +82,9 @@ def explain_analysis(payload: dict) -> dict:
             news_score = max(0.0, min(100.0, float(news_score)))
 
         text = (
-            "正向因素：" + str(result.get("positive_factors", "未提供")) + "\n"
-            "觀察事項：" + str(result.get("watch_items", "未提供")) + "\n"
-            "主要風險：" + str(result.get("risks", "未提供")) + "\n"
+            "正向因素：" + str(result.get("positive_factors", "未提供")) + "\\n"
+            "觀察事項：" + str(result.get("watch_items", "未提供")) + "\\n"
+            "主要風險：" + str(result.get("risks", "未提供")) + "\\n"
             "綜合解讀：" + str(result.get("summary", "未提供"))
         )
         return {"available": True, "news_score": news_score, "text": text}
@@ -83,6 +97,8 @@ def explain_analysis(payload: dict) -> dict:
             message = "Gemini API 金鑰或專案權限無效"
         elif status == 404:
             message = f"找不到 Gemini 模型：{model}"
+        elif status in (500, 502, 503, 504):
+            message = f"Gemini 服務暫時過載（HTTP {status}），稍後再試"
         else:
             message = f"Gemini API HTTP {status}"
         return {
