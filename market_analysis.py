@@ -39,6 +39,11 @@ def run_market_analysis(user_symbol: str) -> dict:
         "news": news_items, "score": score,
     }
     payload["ai"] = explain_analysis(payload)
+    score = calculate_market_score(
+        technical, fundamental, chips, benchmarks, news_items,
+        news_score=payload["ai"].get("news_score")
+    )
+    payload["score"] = score
     _CACHE[cache_key] = {"cached_at": datetime.now(timezone.utc), "payload": payload}
     return payload
 
