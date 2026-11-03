@@ -1,5 +1,6 @@
 """Transparent weighted scoring for swing analysis; missing dimensions are reweighted."""
 from __future__ import annotations
+import math
 
 WEIGHTS = {"technical": 0.30, "fundamental": 0.20, "chips": 0.20, "market": 0.15, "news": 0.15}
 
@@ -71,7 +72,16 @@ def score_chips(data):
     if not known:
         return None, ["無有效法人買賣超資料"]
     total = sum(known)
-    score = _clamp(50 + max(-25, min(25, total / max(data.get("volume", 1), 1) * 250)))
+    volume = data.get("volume")
+    try:
+        volume = float(volume)
+        if not math.isfinite(volume) or volume <= 0:
+            volume = None
+    except (TypeError, ValueError):
+        volume = None
+    if volume is None:
+        return None, ["缺少有效成交量，無法標準化法人買賣超"]
+    score = _clamp(50 + max(-25, min(25, total / volume * 250)))
     return score, [f"最近交易日法人合計淨買賣超 {total:,.0f} 股"]
 
 
