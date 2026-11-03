@@ -56,7 +56,7 @@ def describe_command(text):
     if low in ("其他資訊", "其他", "other_info"):
         return "開啟其他資訊選單", False
 
-    analysis_match = re.fullmatch(r"分析\\s+(\\S+)", t, flags=re.IGNORECASE)
+    analysis_match = re.fullmatch(r"分析\s+(\S+)", t, flags=re.IGNORECASE)
     if analysis_match:
         return f"分析 {analysis_match.group(1).upper()} 市場訊號", True
 
