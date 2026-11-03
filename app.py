@@ -159,7 +159,17 @@ def is_tw_code(symbol):
     return bool(TW_CODE_RE.fullmatch(symbol.strip().upper()))
 
 
-# 中文公司名稱搜尋：使用 Yahoo Finance Search，結果只接受台股上市／上櫃代碼。
+# 常見台股名稱先用固定對照，其他公司再交由 Yahoo Finance 搜尋。
+# 代碼為台灣上市櫃市場常用代碼；搜尋服務仍負責處理其他公司名稱。
+_TW_STOCK_NAME_ALIASES = {
+    "台積電": "2330", "台灣積體電路": "2330",
+    "聯發科": "2454", "聯發科技": "2454",
+    "南亞科": "2408", "鴻海": "2317", "台達電": "2308",
+    "國巨": "2327", "日月光投控": "3711", "緯創": "3231",
+    "廣達": "2382", "華碩": "2357", "長榮": "2603",
+    "陽明": "2609", "中鋼": "2002", "南亞": "1303",
+    "台塑": "1301", "台泥": "1101", "中華電": "2412",
+}
 _tw_name_cache = {}
 
 
@@ -170,6 +180,9 @@ def resolve_tw_stock_code(name):
         return query.upper() if is_tw_code(query) else None
 
     cache_key = query.casefold()
+    known_code = _TW_STOCK_NAME_ALIASES.get(query)
+    if known_code:
+        return known_code
     if cache_key in _tw_name_cache:
         return _tw_name_cache[cache_key]
 
