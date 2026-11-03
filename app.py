@@ -159,6 +159,70 @@ def is_tw_code(symbol):
     return bool(TW_CODE_RE.fullmatch(symbol.strip().upper()))
 
 
+# 中文公司名稱搜尋：使用 Yahoo Finance Search，結果只接受台股上市／上櫃代碼。
+_tw_name_cache = {}
+
+
+def resolve_tw_stock_code(name):
+    """將台股中文名稱解析成代碼；只接受 .TW/.TWO 股票或 ETF，避免誤配海外標的。"""
+    query = str(name or "").strip()
+    if not query or is_tw_code(query):
+        return query.upper() if is_tw_code(query) else None
+
+    cache_key = query.casefold()
+    if cache_key in _tw_name_cache:
+        return _tw_name_cache[cache_key]
+
+    try:
+        search = yf.Search(query, max_results=10, news_count=0, timeout=8)
+        quotes = getattr(search, "quotes", []) or []
+        matches = []
+        for item in quotes:
+            symbol = str(item.get("symbol", "")).upper()
+            if not re.fullmatch(r"\d{4,6}[A-Z]?\.TWO?", symbol):
+                continue
+            quote_type = str(item.get("quoteType", "")).upper()
+            if quote_type and quote_type not in ("EQUITY", "ETF"):
+                continue
+
+            names = [
+                str(item.get("shortname", "")),
+                str(item.get("longname", "")),
+                str(item.get("displayName", "")),
+            ]
+            normalized = [re.sub(r"[\s股份有限公司、（）()]+", "", value).casefold()
+                          for value in names if value]
+            needle = re.sub(r"[\s股份有限公司、（）()]+", "", query).casefold()
+            if not needle:
+                continue
+
+            if needle in normalized:
+                score = 3
+            elif any(needle in value for value in normalized):
+                score = 2
+            elif any(value in needle for value in normalized if len(value) >= 2):
+                score = 1
+            else:
+                continue
+            matches.append((score, symbol))
+
+        if matches:
+            best_score = max(score for score, _ in matches)
+            best_symbols = sorted({symbol for score, symbol in matches if score == best_score})
+            resolved = best_symbols[0] if len(best_symbols) == 1 else None
+        else:
+            resolved = None
+    except Exception as exc:
+        logger.warning("台股名稱搜尋失敗 (%s)：%s", query, exc)
+        resolved = None
+
+    # 快取成功與失敗結果 10 分鐘，降低 Yahoo 搜尋頻率。
+    _tw_name_cache[cache_key] = resolved
+    if len(_tw_name_cache) > 300:
+        _tw_name_cache.clear()
+    return resolved
+
+
 _resolved = {}
 
 
@@ -536,6 +600,11 @@ def resolve_target(token):
         }
 
     upper = token.upper()
+    if not is_tw_code(upper) and re.search(r"[\u4e00-\u9fff]", token):
+        resolved_code = resolve_tw_stock_code(token)
+        if not resolved_code:
+            raise ValueError(f"找不到「{token}」的台股代號，請確認公司名稱或改輸入股票代碼。")
+        upper = resolved_code
     symbol = normalize_ticker(upper)
     name, currency = stock_meta(upper, symbol)
     return {
@@ -631,8 +700,10 @@ def help_text():
 
 輸入股票或 ETF 代碼，即可查詢行情與漲跌幅。
 
-・台股：2330、0050、00981A
+・台股代碼：2330、0050、00981A
+・台股名稱：台積電、聯發科、南亞科
 ・美股：AAPL
+・也支援：分析 台積電、籌碼 聯發科、本益比 南亞科
 
 查詢後可選擇一週、一個月、三個月、年初至今或自訂時間。
 
@@ -691,8 +762,9 @@ def help_text():
 
 💡 使用小提醒
 
-1. 股票代碼直接輸入即可查詢。
-2. 查詢個股資訊時，指令與股票代碼之間記得加空格，例如 籌碼 2330。
+1. 股票代碼或台股中文名稱都能直接輸入查詢。
+2. 個股指令支援中文名稱，例如 籌碼 聯發科、本益比 台積電。
+3. 查詢個股資訊時，指令與標的之間記得加空格。
 3. 不知道怎麼使用時，輸入 功能說明 即可查看本指南。
 
 📊 川投顧｜讓金融資訊查詢更簡單。
@@ -813,6 +885,8 @@ def query_today(token):
             return f"查不到 {target['symbol']} 的股價資料，請確認代碼是否正確。"
 
         return quote_card(target, hist)
+    except ValueError as exc:
+        return str(exc)
     except Exception as exc:
         logger.exception("今日行情查詢錯誤")
         return f"查詢失敗：{type(exc).__name__}"
@@ -855,6 +929,8 @@ def query_period(token, period_name):
             return f"查不到 {target['code']} 的歷史股價。"
 
         return period_card(target, hist, f"查詢區間：{label}")
+    except ValueError as exc:
+        return str(exc)
     except Exception as exc:
         logger.exception("期間查詢錯誤")
         return f"歷史股價查詢失敗：{type(exc).__name__}"
@@ -893,6 +969,10 @@ def query_custom_period(token, start_date, end_date):
 
 def query_valuation(stock_id):
     stock_id = stock_id.strip().upper()
+    if not is_tw_code(stock_id) and re.search(r"[\u4e00-\u9fff]", stock_id):
+        stock_id = resolve_tw_stock_code(stock_id)
+        if not stock_id:
+            return "找不到這個台股名稱，請確認公司名稱或輸入股票代碼。"
 
     try:
         # 台股（含 ETF）自動判斷 .TW / .TWO；美股直接使用股票代號
@@ -1025,6 +1105,8 @@ def net_color(net):
 def query_institutional(symbol):
     try:
         stock_id = symbol.strip().upper()
+        if not is_tw_code(stock_id) and re.search(r"[\u4e00-\u9fff]", stock_id):
+            stock_id = resolve_tw_stock_code(stock_id) or ""
         if not is_tw_code(stock_id):
             return "籌碼查詢目前僅支援台股代碼，例如：籌碼 2330。"
 
@@ -1124,8 +1206,10 @@ def query_institutional(symbol):
 
 def query_foreign_shareholding(symbol):
     stock_id = symbol.strip().upper()
+    if not is_tw_code(stock_id) and re.search(r"[\u4e00-\u9fff]", stock_id):
+        stock_id = resolve_tw_stock_code(stock_id) or ""
     if not is_tw_code(stock_id):
-        return "外資持股查詢目前僅支援台股代碼，例如：外資 2330。"
+        return "外資持股查詢目前僅支援台股名稱或代碼，例如：外資 台積電。"
 
     data = get_finmind_data(
         "TaiwanStockShareholding",
@@ -1483,7 +1567,11 @@ SYMBOL_RE = re.compile(r"[A-Za-z0-9.^=_-]{1,20}")
 
 
 def valid_target(token):
-    return token.lower() in ASSET_ALIASES or bool(SYMBOL_RE.fullmatch(token))
+    return (
+        token.lower() in ASSET_ALIASES
+        or bool(SYMBOL_RE.fullmatch(token))
+        or bool(re.fullmatch(r"[\u4e00-\u9fff]{2,16}", token))
+    )
 
 
 def handle_command(text, user_id=None):
@@ -1514,10 +1602,15 @@ def handle_command(text, user_id=None):
         return other_info_text(), default_quick
 
     # 波段市場訊號分析：日 K＋週 K、五大面向加權評分
-    analysis_match = re.fullmatch(r"分析\s+([A-Za-z0-9.^=_-]{1,20})", text, flags=re.IGNORECASE)
+    analysis_match = re.fullmatch(r"分析\s+([\w.^=_-]{1,20})", text, flags=re.IGNORECASE)
     if analysis_match and valid_target(analysis_match.group(1)):
         try:
-            result = run_market_analysis(analysis_match.group(1))
+            analysis_symbol = analysis_match.group(1)
+            if re.search(r"[\u4e00-\u9fff]", analysis_symbol):
+                analysis_symbol = resolve_tw_stock_code(analysis_symbol)
+                if not analysis_symbol:
+                    return f"找不到「{analysis_match.group(1)}」的台股代號，請確認公司名稱。", default_quick
+            result = run_market_analysis(analysis_symbol)
             return format_market_analysis(result), default_quick
         except Exception as exc:
             logger.exception("市場分析失敗")
@@ -1560,17 +1653,17 @@ def handle_command(text, user_id=None):
         return custom_period_prompt(token), period_quick(alias_for(token), include_today=True)
 
     # 籌碼
-    chip_match = re.fullmatch(r"(?:籌碼|法人|三大法人)\s+([A-Za-z0-9.^=_-]+)", text, flags=re.IGNORECASE)
+    chip_match = re.fullmatch(r"(?:籌碼|法人|三大法人)\s+(\S+)", text, flags=re.IGNORECASE)
     if chip_match:
         return query_institutional(chip_match.group(1)), chip_quick()
 
     # 外資持股
-    foreign_match = re.fullmatch(r"外資\s+(\d{4,6}[A-Za-z]?)", text)
+    foreign_match = re.fullmatch(r"外資\s+(\S+)", text)
     if foreign_match:
         return query_foreign_shareholding(foreign_match.group(1)), default_quick
 
     # 本益比
-    pe_match = re.fullmatch(r"(?:本益比|估值|EPS)\s+([A-Za-z0-9.^=_-]+)", text, flags=re.IGNORECASE)
+    pe_match = re.fullmatch(r"(?:本益比|估值|EPS)\s+(\S+)", text, flags=re.IGNORECASE)
     if pe_match:
         return query_valuation(pe_match.group(1)), default_quick
 
@@ -1593,7 +1686,9 @@ def handle_command(text, user_id=None):
         )
 
     # 即時股價（股票或 ETF，大小寫皆可，不用加 .TW）
-    if SYMBOL_RE.fullmatch(text):
+    if SYMBOL_RE.fullmatch(text) or (
+        re.fullmatch(r"[\u4e00-\u9fff]{2,16}", text) and valid_target(text)
+    ):
         if command in ("hi", "hello", "start", "開始"):
             return help_text(), default_quick
         return query_today(text), period_quick(alias_for(text))
