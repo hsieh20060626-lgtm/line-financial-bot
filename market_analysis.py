@@ -61,21 +61,30 @@ def format_market_analysis(data: dict) -> str:
     else:
         lines.append(f"總分：{score['score']:.1f}/100｜訊號：{score['signal']}")
     lines.append(f"資料完整度：{score['data_completeness']:.0f}%（依有效面向權重計算）")
-    lines.append("五大面向：")
+    lines.append("五大面向（面向｜分數｜分析結果）：")
     labels = {"technical":"技術面 30%", "fundamental":"基本面 20%", "chips":"籌碼面 20%",
               "market":"市場環境 15%", "news":"消息面 15%"}
     for key, label in labels.items():
         value, reasons = score["dimensions"][key]
-        lines.append(f"・{label}：{'未評分' if value is None else f'{value:.1f}/100'}")
-        for reason in reasons[:2]:
-            lines.append(f"  - {reason}")
+        score_text = "未評分" if value is None else f"{value:.1f}/100"
+        explanation = "；".join(reasons[:2]) if reasons else "目前沒有可用的分析依據"
+        lines.append(f"{label}｜{score_text}｜{explanation}")
     daily, weekly = data["technical"]["daily"], data["technical"]["weekly"]
     lines += ["日週線：日 K {0}；週 K {1}（週 K 最新一根可能尚未收完）".format(daily["trend"], weekly["trend"])]
-    if data["fundamental"].get("available"):
-        f = data["fundamental"]
-        lines.append(f"基本面：EPS {f.get('eps_ttm') if f.get('eps_ttm') is not None else '無資料'}；本益比 {f.get('trailing_pe') if f.get('trailing_pe') is not None else '無資料'}")
+    f = data["fundamental"]
+    if f.get("not_applicable"):
+        lines.append(f"基本面資料：{f.get('reason', '標的不適用')}")
     else:
-        lines.append("基本面：資料不足／不適用")
+        eps_text = f"{f['eps_ttm']:.2f}" if f.get("eps_ttm") is not None else "缺失"
+        pe_text = f"{f['trailing_pe']:.2f}" if f.get("trailing_pe") is not None else "缺失"
+        revenue_text = f"{f['revenue_growth']*100:.1f}%" if f.get("revenue_growth") is not None else "缺失"
+        earnings_text = f"{f['earnings_growth']*100:.1f}%" if f.get("earnings_growth") is not None else "缺失"
+        lines.append(f"基本面明細：EPS {eps_text}；本益比 {pe_text}；營收年增 {revenue_text}；獲利年增 {earnings_text}")
+        lines.append(f"基本面來源：{f.get('source', '未提供')}｜資料日期：{f.get('as_of') or '未提供'}")
+        if f.get("missing_fields"):
+            lines.append("基本面缺失欄位：" + "、".join(f["missing_fields"]))
+        for warning in f.get("fetch_warnings", [])[:2]:
+            lines.append("基本面取得警告：" + warning)
     if data["chips"].get("available"):
         lines.append(f"籌碼資料日期：{data['chips'].get('date')}（單位：股）")
     else:
