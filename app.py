@@ -1510,7 +1510,7 @@ def handle_command(text, user_id=None):
         return other_info_text(), default_quick
 
     # 波段市場訊號分析：日 K＋週 K、五大面向加權評分
-    analysis_match = re.fullmatch(r"分析\\s+([A-Za-z0-9.^=_-]{1,20})", text, flags=re.IGNORECASE)
+    analysis_match = re.fullmatch(r"分析\s+([A-Za-z0-9.^=_-]{1,20})", text, flags=re.IGNORECASE)
     if analysis_match and valid_target(analysis_match.group(1)):
         try:
             result = run_market_analysis(analysis_match.group(1))
