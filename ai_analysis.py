@@ -28,7 +28,7 @@ def explain_analysis(payload: dict) -> dict:
         "若沒有足夠新聞則為 null）、positive_factors（字串）、"
         "watch_items（字串）、risks（字串）、"
         "summary（繁體中文，包含日週線一致性與消息可能影響）。"
-        "不可提供個人化買賣指令；資料不足要明說。資料如下：\\n"
+        "不可提供個人化買賣指令；資料不足要明說。資料如下：\n"
         + json.dumps(payload, ensure_ascii=False, default=str)
     )
 
@@ -82,9 +82,9 @@ def explain_analysis(payload: dict) -> dict:
             news_score = max(0.0, min(100.0, float(news_score)))
 
         text = (
-            "正向因素：" + str(result.get("positive_factors", "未提供")) + "\\n"
-            "觀察事項：" + str(result.get("watch_items", "未提供")) + "\\n"
-            "主要風險：" + str(result.get("risks", "未提供")) + "\\n"
+            "正向因素：" + str(result.get("positive_factors", "未提供")) + "\n"
+            "觀察事項：" + str(result.get("watch_items", "未提供")) + "\n"
+            "主要風險：" + str(result.get("risks", "未提供")) + "\n"
             "綜合解讀：" + str(result.get("summary", "未提供"))
         )
         return {"available": True, "news_score": news_score, "text": text}
