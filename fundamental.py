@@ -12,6 +12,9 @@ def fetch_fundamentals(symbol: str, market: str) -> dict[str, Any]:
     except Exception as exc:
         return {"available": False, "reason": f"Yahoo Finance fundamentals unavailable: {type(exc).__name__}",
                 "source": "Yahoo Finance"}
+    if info.get("quoteType") == "ETF":
+        return {"available": False, "not_applicable": True, "reason": "ETF 不適用一般公司 EPS／本益比評分", "source": "Yahoo Finance"}
+
     def number(*keys):
         for key in keys:
             value = info.get(key)
