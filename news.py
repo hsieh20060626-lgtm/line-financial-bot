@@ -179,3 +179,76 @@ def news_recipients():
     """從環境變數 NEWS_USER_IDS 讀取收新聞的人（逗號分隔）。"""
     raw = os.getenv("NEWS_USER_IDS", "")
     return [uid.strip() for uid in raw.split(",") if uid.strip()]
+
+
+# ==================================================
+# 個股新聞與國際總經新聞（AI 市場分析 v1）
+# ==================================================
+def _fetch_search_items(query, source_label, limit=5):
+    """Google News RSS 搜尋；保留發布時間、連結與來源標籤。"""
+    from email.utils import parsedate_to_datetime
+    try:
+        response = requests.get(_feed_url(query), timeout=12,
+                                headers={"User-Agent": "Mozilla/5.0"})
+        response.raise_for_status()
+        root = ET.fromstring(response.content)
+    except Exception as exc:
+        logger.warning("市場分析新聞讀取失敗（%s）：%s", source_label, exc)
+        return []
+    items, seen = [], set()
+    now = datetime.now(TW_TZ)
+    for node in root.iter("item"):
+        title = (node.findtext("title") or "").strip()
+        link = (node.findtext("link") or "").strip()
+        raw_date = (node.findtext("pubDate") or "").strip()
+        if not title or not link.startswith("https://") or title in seen:
+            continue
+        seen.add(title)
+        try:
+            dt = parsedate_to_datetime(raw_date)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.astimezone(TW_TZ)
+            age = now - dt
+            if age.total_seconds() < -3600 or age.days > 7:
+                continue
+            published = dt.strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            continue
+        items.append({"title": title, "link": link, "published": published,
+                      "source": source_label})
+        if len(items) >= limit:
+            break
+    return items
+
+
+def fetch_symbol_news(symbol):
+    """個股近七日新聞；沒有可解析發布時間的新聞不納入分析。"""
+    token = str(symbol).strip().upper()
+    queries = [f'"{token}" stock when:7d', f'"{token}" 股價 when:7d']
+    results, seen = [], set()
+    for query in queries:
+        for item in _fetch_search_items(query, "Google News", limit=4):
+            if item["title"] not in seen:
+                seen.add(item["title"])
+                results.append(item)
+        if len(results) >= 5:
+            break
+    return results[:5]
+
+
+def fetch_macro_news():
+    """國際總經近七日新聞；保留發布時間及來源。"""
+    queries = [
+        "Federal Reserve inflation interest rates economy when:7d",
+        "global economy oil geopolitics central banks when:7d",
+    ]
+    results, seen = [], set()
+    for query in queries:
+        for item in _fetch_search_items(query, "Google News / 國際總經", limit=3):
+            if item["title"] not in seen:
+                seen.add(item["title"])
+                results.append(item)
+        if len(results) >= 4:
+            break
+    return results[:4]
