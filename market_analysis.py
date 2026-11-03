@@ -48,7 +48,7 @@ def format_market_analysis(data: dict) -> str:
     lines = [f"📊 川投顧市場訊號分析｜{data['symbol']}",
              f"市場：{'台股' if data['market']=='TW' else '美股'}｜資料日期：{data['as_of']}",
              f"資料來源：{data['source']}",
-             f"分析時間：{data.get('generated_at', '未提供')}"
+             f"分析時間：{data.get('generated_at', '未提供')}"]
     if data.get("stale"):
         lines.append("⚠️ 行情資料可能過期，請勿視為即時報價。")
     if score["score"] is None:
