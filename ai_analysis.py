@@ -20,7 +20,7 @@ def explain_analysis(payload: dict) -> dict:
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={"model": model, "messages": [{"role": "user", "content": prompt}],
                   "temperature": 0.2, "max_tokens": 700},
-            timeout=25,
+            timeout=8,
         )
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"].strip()
