@@ -16,10 +16,9 @@ def explain_analysis(payload: dict) -> dict:
             "text": "尚未設定 GEMINI_API_KEY；目前只提供可重現的規則評分，消息面不納入分數。",
         }
 
-    # gemini-2.5-flash-lite has a free tier; quota and model availability depend on the
-    # Google AI Studio project. Override GEMINI_MODEL only if the selected model supports
-    # the free tier in that project.
-    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite").strip()
+    # Gemini 3.1 Flash-Lite is listed as a stable model with free-tier text tokens.
+    # Quotas still apply; the user must not enable paid billing for this free-only setup.
+    model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite").strip()
     prompt = (
         "你是金融市場研究助理。只能根據 JSON 提供的數據與新聞做解讀，"
         "不可補造價格、財報、新聞或日期。請只回傳 JSON object，欄位為："
