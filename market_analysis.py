@@ -19,6 +19,8 @@ def run_market_analysis(user_symbol: str) -> dict:
     fundamental = fetch_fundamentals(ticker, market)
     chips = fetch_stock_chips(user_symbol, os.getenv("FINMIND_TOKEN", "")) if market == "TW" else {
         "available": False, "reason": "美股不適用台股三大法人資料，且本版未接入可驗證的美股資金流來源"}
+    if chips.get("available"):
+        chips["volume"] = float(market_data["history"]["Volume"].iloc[-1] or 0)
     benchmarks = fetch_benchmarks(market)
     news_items = fetch_symbol_news(user_symbol) + fetch_macro_news()
     score = calculate_market_score(technical, fundamental, chips, benchmarks, news_items)
