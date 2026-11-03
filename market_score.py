@@ -48,6 +48,11 @@ def score_fundamental(data):
     earnings = data.get("earnings_growth")
     margin = data.get("profit_margin")
     pe = data.get("trailing_pe")
+    eps = data.get("eps_ttm")
+    if eps is not None:
+        score += 4 if eps > 0 else -8 if eps < 0 else -3
+        used += 1
+        reasons.append(f"近四季 EPS {eps:.2f}（{'正值' if eps > 0 else '負值' if eps < 0 else '零'}）")
     if growth is not None:
         score += max(-12, min(12, growth * 30)); used += 1
         reasons.append(f"營收成長 {growth*100:.1f}%")
