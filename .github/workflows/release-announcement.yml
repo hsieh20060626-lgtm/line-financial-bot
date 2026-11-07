@@ -1,0 +1,78 @@
+name: Customer release announcement
+
+on:
+  workflow_run:
+    workflows: ["Python tests"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  announce:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for the matching Render deploy to become live
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
+          SERVICE_ID: srv-dbg3anqjnfac73f51n70
+        run: |
+          if [ -z "$RENDER_API_KEY" ]; then
+            echo "::warning::Missing GitHub secret RENDER_API_KEY; release announcement skipped."
+            exit 0
+          fi
+          for attempt in $(seq 1 60); do
+            response=$(curl -fsS \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              -H "Accept: application/json" \
+              "https://api.render.com/v1/services/$SERVICE_ID/deploys?limit=20") || {
+                sleep 10
+                continue
+              }
+            deploy=$(printf '%s' "$response" | jq -c --arg sha "$COMMIT_SHA" \
+              '[.[] | .deploy | select(.commit.id == $sha)][0] // empty')
+            if [ -n "$deploy" ]; then
+              status=$(printf '%s' "$deploy" | jq -r '.status')
+              echo "Matching Render deploy status: $status"
+              if [ "$status" = "live" ]; then
+                echo "Matching commit is live."
+                exit 0
+              fi
+              case "$status" in
+                build_failed|update_failed|pre_deploy_failed|canceled)
+                  echo "Render deploy failed; no customer announcement will be sent."
+                  exit 1
+                  ;;
+              esac
+            fi
+            sleep 10
+          done
+          echo "Timed out waiting for matching Render deploy; no announcement sent."
+          exit 1
+
+      - name: Send release announcement
+        env:
+          RELEASE_CRON_SECRET: ${{ secrets.RELEASE_CRON_SECRET }}
+        run: |
+          if [ -z "$RELEASE_CRON_SECRET" ]; then
+            echo "::warning::Missing GitHub secret RELEASE_CRON_SECRET; release announcement skipped."
+            exit 0
+          fi
+          response_file=$(mktemp)
+          http_code=$(curl -sS -o "$response_file" -w "%{http_code}" -X POST \
+            "https://line-financial-bot-f8mw.onrender.com/release_announcement?key=$RELEASE_CRON_SECRET")
+          cat "$response_file"
+          if [ "$http_code" = "409" ]; then
+            echo "::warning::Database is not configured yet; announcement skipped."
+            exit 0
+          fi
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "Release announcement endpoint failed with HTTP $http_code."
+            exit 1
+          fi
