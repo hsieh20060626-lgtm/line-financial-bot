@@ -1736,11 +1736,14 @@ def get_display_name(user_id):
 
 def record_usage(user_id, text):
     """
-    寫一行紀錄，例如：「某某 查詢 2330 股價」。
+    寫一行紀錄，並透過既有 Google Apps Script 自動維護 LINE User ID 名單。
     若有設定環境變數 ADMIN_USER_ID，會把值得注意的查詢推播給管理員
     （每次推播都會佔用 LINE 訊息額度）。
     """
     try:
+        # 沿用既有 GOOGLE_SHEET_WEB_APP_URL；寫入失敗不影響 LINE 回覆。
+        from google_sheet_registry import register_customer
+        register_customer(user_id)
         name = get_display_name(user_id)
         description, notable = describe_command(text)
         line = f"{name} {description}"
@@ -1779,6 +1782,43 @@ def push_news_route():
     except Exception:
         logger.exception("新聞推播失敗")
         abort(500)
+
+
+@app.route("/push_update", methods=["GET", "POST"])
+def push_update_route():
+    """部署完成後由管理者呼叫：/push_update?key=CRON_SECRET"""
+    key = request.args.get("key", "")
+    if not CRON_SECRET or not hmac.compare_digest(key, CRON_SECRET):
+        abort(403)
+
+    try:
+        from google_sheet_registry import get_customer_ids
+
+        recipients = get_customer_ids()
+        if not recipients:
+            return "Google 試算表目前沒有可推播的客戶 UID；未發送公告。", 409
+
+        announcement = (
+            "📢 川投顧 v1.1.0 更新公告\n"
+            "━━━━━━━━━━━━━━\n"
+            "【新增功能】恢復 LINE 使用者自動登記。\n"
+            "【功能調整】優化市場訊號分析。\n"
+            "【錯誤修正】修正台股與美股判定邏輯，改善資料缺漏處理。"
+        )
+        message = TextMessage(text=announcement)
+        sent = 0
+        with ApiClient(configuration) as api_client:
+            api = MessagingApi(api_client)
+            for i in range(0, len(recipients), 500):
+                batch = recipients[i:i + 500]
+                api.multicast(MulticastRequest(to=batch, messages=[message]))
+                sent += len(batch)
+
+        logger.info("v1.1.0 更新公告推播完成，收件人數：%d", sent)
+        return f"v1.1.0 更新公告已推播給 {sent} 位客戶。"
+    except Exception as exc:
+        logger.exception("更新公告推播失敗")
+        return f"更新公告推播失敗：{type(exc).__name__}", 500
 
 
 @app.route("/callback", methods=["POST"])
