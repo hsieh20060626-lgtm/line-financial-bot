@@ -76,3 +76,43 @@ def get_customer_ids(session=None):
                 seen.add(uid)
                 ids.append(uid)
     return ids
+
+
+def claim_announcement(event_id, user_id, announcement_text, session=None):
+    """Atomically claim an announcement in Google Sheets; fail closed on errors."""
+    if not isinstance(user_id, str) or not user_id.startswith("U"):
+        raise ValueError("管理員 UID 格式不正確")
+    if not isinstance(announcement_text, str) or not announcement_text.strip():
+        raise ValueError("公告內容不可為空")
+
+    import hashlib
+    event_id = str(event_id or "").strip()
+    if not event_id:
+        raise ValueError("缺少 LINE webhook event ID")
+
+    announcement_key = hashlib.sha256(
+        (user_id + "\\0" + announcement_text.strip()).encode("utf-8")
+    ).hexdigest()
+
+    client = session or requests
+    try:
+        response = client.post(
+            _endpoint(),
+            json={
+                "action": "claim_announcement",
+                "eventId": event_id,
+                "announcementKey": announcement_key,
+                "userId": user_id,
+            },
+            timeout=8,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, RuntimeError, ValueError) as exc:
+        raise RuntimeError(
+            f"公告防重複紀錄服務無法確認：{type(exc).__name__}"
+        ) from None
+
+    if not isinstance(payload, dict) or payload.get("status") != "success":
+        raise RuntimeError("公告防重複紀錄服務回傳格式錯誤")
+    return payload.get("claimed") is True
