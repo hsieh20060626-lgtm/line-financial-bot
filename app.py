@@ -57,6 +57,8 @@ LINE_CHANNEL_SECRET = require_env("LINE_CHANNEL_SECRET")
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "")
 # 新聞推播：CRON_SECRET 是排程呼叫 /push_news 時的密碼；NEWS_USER_IDS 是收新聞的人（逗號分隔）
 CRON_SECRET = os.getenv("CRON_SECRET", "")
+# 管理員 LINE User ID：只允許此帳號透過 LINE 指令發送公告
+ADMIN_USER_ID = os.getenv("ADMIN_USER_ID", "").strip()
 
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
@@ -1596,6 +1598,31 @@ def handle_command(text, user_id=None):
         return "請輸入指令，輸入「選單」查看完整功能。", default_quick
 
     command = text.lower()
+
+    # 管理員公告：僅允許 ADMIN_USER_ID 發送，指令格式「公告確認 內容」
+    if text.startswith("公告確認 "):
+        if not ADMIN_USER_ID or not user_id or not hmac.compare_digest(user_id, ADMIN_USER_ID):
+            return "此指令僅限管理員使用。", default_quick
+        announcement = text[len("公告確認 "):].strip()
+        if not announcement:
+            return "公告內容不可為空。", default_quick
+        if len(announcement) > 4500:
+            return "公告內容過長，請控制在 4500 字以內。", default_quick
+        try:
+            from google_sheet_registry import get_customer_ids
+            recipients = get_customer_ids()
+            if not recipients:
+                return "客戶名單目前為空，未發送公告。", default_quick
+            message = TextMessage(text=announcement)
+            with ApiClient(configuration) as api_client:
+                api = MessagingApi(api_client)
+                for i in range(0, len(recipients), 500):
+                    api.multicast(MulticastRequest(to=recipients[i:i + 500], messages=[message]))
+            logger.info("管理員公告推播完成，收件人數：%d", len(recipients))
+            return f"公告已成功送出，收件人數：{len(recipients)} 位。", default_quick
+        except Exception as exc:
+            logger.exception("管理員公告推播失敗")
+            return f"公告推播失敗：{type(exc).__name__}，請檢查系統紀錄。", default_quick
 
     if command in ("新聞", "財經新聞", "news"):
         return query_news(), default_quick
