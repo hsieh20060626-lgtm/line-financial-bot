@@ -21,30 +21,56 @@ def run_market_analysis(user_symbol: str) -> dict:
     cached = _CACHE.get(cache_key)
     if cached and (datetime.now(timezone.utc) - cached['cached_at']).total_seconds() < _CACHE_TTL:
         return cached['payload']
+
     market_data = fetch_daily_history(user_symbol, period="2y")
     ticker, market = market_data["symbol"], market_data["market"]
-    technical = analyze_technical_indicators(market_data["history"])
+    history = market_data["history"]
+    technical = analyze_technical_indicators(history)
     fundamental = fetch_fundamentals(ticker, market)
-    chips = fetch_stock_chips(user_symbol, os.getenv("FINMIND_TOKEN", "")) if market == "TW" else {
-        "available": False, "reason": "美股不適用台股三大法人資料，且本版未接入可驗證的美股資金流來源"}
-    if chips.get("available"):
-        chips["volume"] = float(market_data["history"]["Volume"].iloc[-1] or 0)
+
+    if market == "TW":
+        chips = fetch_stock_chips(user_symbol, os.getenv("FINMIND_TOKEN", ""))
+        if chips.get("available"):
+            chips["volume"] = float(history["Volume"].iloc[-1] or 0)
+            chips["market"] = "TW"
+    else:
+        # US equities do not have a directly comparable, daily public feed for
+        # Taiwan-style three-institution net trading. Use a clearly labelled
+        # OHLCV price/volume proxy; never describe it as institutional flow.
+        daily = technical.get("daily", {})
+        volume_ratio = daily.get("volume_ratio")
+        try:
+            last_close = float(history["Close"].iloc[-1])
+            prior_close = float(history["Close"].iloc[-2])
+            price_change_pct = (last_close / prior_close - 1) * 100 if prior_close else None
+        except (IndexError, TypeError, ValueError, ZeroDivisionError):
+            price_change_pct = None
+        chips = {
+            "available": volume_ratio is not None and price_change_pct is not None,
+            "market": "US",
+            "method": "volume_price_proxy",
+            "volume_ratio": volume_ratio,
+            "price_change_pct": price_change_pct,
+            "date": market_data["as_of"],
+            "source": "Yahoo Finance OHLCV",
+            "reason": "美股無台股式每日三大法人買賣超公開資料；本版改用價格與成交量代理指標，並非機構持倉資料",
+        }
+
     benchmarks = fetch_benchmarks(market)
     news_items = fetch_symbol_news(user_symbol) + fetch_macro_news()
     score = calculate_market_score(technical, fundamental, chips, benchmarks, news_items)
     payload = {
         "symbol": user_symbol.upper(), "resolved_symbol": ticker, "market": market,
         "as_of": market_data["as_of"], "source": market_data["source"],
-        "stale": market_data["stale"], "generated_at": datetime.now(timezone.utc).isoformat(), "technical": technical,
-        "fundamental": fundamental, "chips": chips, "benchmarks": benchmarks,
-        "news": news_items, "score": score,
+        "stale": market_data["stale"], "generated_at": datetime.now(timezone.utc).isoformat(),
+        "technical": technical, "fundamental": fundamental, "chips": chips,
+        "benchmarks": benchmarks, "news": news_items, "score": score,
     }
     payload["ai"] = explain_analysis(payload)
-    score = calculate_market_score(
+    payload["score"] = calculate_market_score(
         technical, fundamental, chips, benchmarks, news_items,
         news_score=payload["ai"].get("news_score")
     )
-    payload["score"] = score
     _CACHE[cache_key] = {"cached_at": datetime.now(timezone.utc), "payload": payload}
     return payload
 
@@ -100,6 +126,7 @@ def format_market_analysis(data: dict) -> dict:
     signal = score.get("signal") or "資料不足"
     total = "資料不足" if score.get("score") is None else f'{score["score"]:.1f}/100'
     completeness = f'{score["data_completeness"]:.0f}%'
+    applicable_weight = f'{score.get("applicable_weight", 100):.0f}%'
     stale = bool(data.get("stale"))
 
     labels = {
@@ -115,7 +142,9 @@ def format_market_analysis(data: dict) -> dict:
     rows = []
     for key, label in labels.items():
         value, reasons = score["dimensions"][key]
-        score_text = "未評分" if value is None else f"{value:.1f}"
+        score_text = "不適用" if key in score.get("not_applicable_dimensions", []) else (
+            "未評分" if value is None else f"{value:.1f}"
+        )
         explanation = "；".join(reasons[:2]) if reasons else "目前沒有可用的分析依據"
         rows.append(_table_row(f"{label} {weights[key]}", score_text, explanation))
 
@@ -128,7 +157,10 @@ def format_market_analysis(data: dict) -> dict:
 
     body = [
         _text_component(f"總分：{total}　訊號：{signal}", "lg", "#C0392B" if signal in ("偏空", "強勢偏空") else "#2C3E50", "bold"),
-        _text_component(f"資料完整度：{completeness}（依有效面向權重計算）", "xs", "#777777"),
+        _text_component(
+            f"資料覆蓋率：{completeness}（排除不適用項目；適用權重 {applicable_weight}）",
+            "xs", "#777777"
+        ),
         {"type": "separator", "margin": "md"},
         _table_row("", "", "", header=True),
         *rows,
@@ -158,16 +190,21 @@ def format_market_analysis(data: dict) -> dict:
         for warning in fundamental.get("fetch_warnings", [])[:2]:
             body.append(_text_component("取得警告：" + warning, "xs", "#B9770E"))
 
-    if chips.get("available"):
-        body += [
-            _section_title("籌碼資料"),
-            _text_component(f'資料日期：{chips.get("date")}（單位：股）', "sm"),
-        ]
+    body.append(_section_title("籌碼／量價資料"))
+    if market_name == "美股":
+        body.append(_text_component(
+            chips.get("reason", "美股使用量價代理指標，不代表機構持倉或法人買賣超。"),
+            "sm"
+        ))
+        if chips.get("available"):
+            body.append(_text_component(
+                f'資料日期：{chips.get("date")}｜漲跌：{chips.get("price_change_pct"):+.2f}%｜成交量／20 日均量：{chips.get("volume_ratio"):.2f} 倍',
+                "sm"
+            ))
+    elif chips.get("available"):
+        body.append(_text_component(f'資料日期：{chips.get("date")}（單位：股）', "sm"))
     else:
-        body += [
-            _section_title("籌碼資料"),
-            _text_component(chips.get("reason", "目前無可用資料"), "sm"),
-        ]
+        body.append(_text_component(chips.get("reason", "目前無可用資料"), "sm"))
 
     body.append(_section_title("近期新聞"))
     if news:
@@ -215,21 +252,23 @@ def format_market_analysis(data: dict) -> dict:
         },
     }
 
-    # Flex 無法建立時由 app.py 自動退回純文字；備用文字也維持同一列三欄的閱讀順序。
     plain_lines = [
         f"📊 川投顧市場訊號分析｜{symbol}",
         f"市場：{market_name}｜資料日期：{data.get('as_of', '未提供')}",
         f"總分：{total}｜訊號：{signal}",
-        f"資料完整度：{completeness}",
+        f"資料覆蓋率：{completeness}（排除不適用項目；適用權重 {applicable_weight}）",
         "分析項目｜分數｜分析結果",
     ]
     for key, label in labels.items():
         value, reasons = score["dimensions"][key]
-        score_text = "未評分" if value is None else f"{value:.1f}"
+        score_text = "不適用" if key in score.get("not_applicable_dimensions", []) else (
+            "未評分" if value is None else f"{value:.1f}"
+        )
         plain_lines.append(f"{label} {weights[key]}｜{score_text}｜{'；'.join(reasons[:2]) if reasons else '目前沒有可用的分析依據'}")
     plain_lines += [
         f'日週線：日 K {daily.get("trend", "未提供")}；週 K {weekly.get("trend", "未提供")}',
         "AI 解讀：" + ai_text,
+        "※ 美股籌碼面使用量價代理指標，不代表機構持倉或即時法人買賣超。",
         "※ 本分析為規則化研究輔助，不構成投資建議；評分未經歷史回測，不代表未來報酬。",
     ]
     return {
