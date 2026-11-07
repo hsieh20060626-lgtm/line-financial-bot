@@ -1601,12 +1601,30 @@ def handle_command(text, user_id=None):
 
     command = text.lower()
 
-    # 緊急暫停公告：調查重複推播期間，任何公告指令均不得觸發 multicast。
+    # 管理員公告：僅允許 ADMIN_USER_ID 發送，指令格式「公告確認 內容」
     if text.startswith("公告確認 "):
         if not ADMIN_USER_ID or not user_id or not hmac.compare_digest(user_id, ADMIN_USER_ID):
             return "此指令僅限管理員使用。", default_quick
-        logger.warning("公告功能暫停中；已拒絕公告指令，未發送 LINE 訊息")
-        return "公告推播目前暫停中，系統正在處理重複推播問題；這次沒有發送任何公告。", default_quick
+        announcement = text[len("公告確認 "):].strip()
+        if not announcement:
+            return "公告內容不可為空。", default_quick
+        if len(announcement) > 4500:
+            return "公告內容過長，請控制在 4500 字以內。", default_quick
+        try:
+            from google_sheet_registry import get_customer_ids
+            recipients = get_customer_ids()
+            if not recipients:
+                return "客戶名單目前為空，未發送公告。", default_quick
+            message = TextMessage(text=announcement)
+            with ApiClient(configuration) as api_client:
+                api = MessagingApi(api_client)
+                for i in range(0, len(recipients), 500):
+                    api.multicast(MulticastRequest(to=recipients[i:i + 500], messages=[message]))
+            logger.info("管理員公告推播完成，收件人數：%d", len(recipients))
+            return f"公告已成功送出，收件人數：{len(recipients)} 位。", default_quick
+        except Exception as exc:
+            logger.exception("管理員公告推播失敗")
+            return f"公告推播失敗：{type(exc).__name__}，請檢查系統紀錄。", default_quick
 
     if command in ("新聞", "財經新聞", "news"):
         return query_news(), default_quick
@@ -1962,19 +1980,13 @@ def _process_message_event(event):
         logger.warning("忽略重複 LINE Webhook 事件")
         return
 
-    # 緊急暫停公告：在事件處理入口先攔截，避免進入任何群發程式。
-    if user_text.startswith("公告確認 "):
-        if user_id and ADMIN_USER_ID and hmac.compare_digest(user_id, ADMIN_USER_ID):
-            logger.warning("公告功能暫停中；Webhook 已攔截管理員公告，未執行群發")
-            send_reply(
-                event.reply_token,
-                "公告推播目前暫停中，系統正在處理重複推播問題；這次沒有發送任何公告。",
-                quick_replies=quick_reply_items(),
-            )
-        else:
-            send_reply(event.reply_token, "此指令僅限管理員使用。", quick_replies=quick_reply_items())
-        return
-
+    # 管理員公告必須先取得 Google 試算表的持久化鎖；失敗時採 fail-closed。
+    if (
+        user_id
+        and ADMIN_USER_ID
+        and hmac.compare_digest(user_id, ADMIN_USER_ID)
+        and user_text.startswith("公告確認 ")
+    ):
         announcement = user_text[len("公告確認 "):].strip()
         if not announcement:
             send_reply(event.reply_token, "公告內容不可為空。", quick_replies=quick_reply_items())
