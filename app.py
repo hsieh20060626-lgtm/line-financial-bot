@@ -1803,7 +1803,7 @@ def home():
 def push_news_route():
     """給排程（例如 cron-job.org）每天早上呼叫：/push_news?key=你的CRON_SECRET"""
     key = request.args.get("key", "")
-    if not CRON_SECRET or not hmac.compare_digest(key, CRON_SECRET):
+    if not CRON_SECRET or not hmac.compare_digest(key.encode("utf-8"), CRON_SECRET.encode("utf-8")):
         abort(403)
     try:
         return push_news()
@@ -1816,7 +1816,7 @@ def push_news_route():
 def test_customer_list_route():
     """管理者唯讀測試：只回報有效 UID 數量，不顯示 UID、不發送訊息。"""
     key = request.args.get("key", "")
-    if not CRON_SECRET or not hmac.compare_digest(key, CRON_SECRET):
+    if not CRON_SECRET or not hmac.compare_digest(key.encode("utf-8"), CRON_SECRET.encode("utf-8")):
         abort(403)
 
     try:
@@ -1841,7 +1841,7 @@ def test_customer_list_route():
 def test_announcement_dedupe_route():
     """管理者防重複測試：只寫入測試紀錄，不讀取客戶名單、不發送 LINE 訊息。"""
     key = request.args.get("key", "")
-    if not CRON_SECRET or not hmac.compare_digest(key, CRON_SECRET):
+    if not CRON_SECRET or not hmac.compare_digest(key.encode("utf-8"), CRON_SECRET.encode("utf-8")):
         abort(403)
 
     try:
@@ -1882,39 +1882,11 @@ def test_announcement_dedupe_route():
 
 @app.route("/push_update", methods=["GET", "POST"])
 def push_update_route():
-    """部署完成後由管理者呼叫：/push_update?key=CRON_SECRET"""
-    key = request.args.get("key", "")
-    if not CRON_SECRET or not hmac.compare_digest(key, CRON_SECRET):
-        abort(403)
-
-    try:
-        from google_sheet_registry import get_customer_ids
-
-        recipients = get_customer_ids()
-        if not recipients:
-            return "Google 試算表目前沒有可推播的客戶 UID；未發送公告。", 409
-
-        announcement = (
-            "📢 川投顧 v1.1.0 更新公告\n"
-            "━━━━━━━━━━━━━━\n"
-            "【新增功能】恢復 LINE 使用者自動登記。\n"
-            "【功能調整】優化市場訊號分析。\n"
-            "【錯誤修正】修正台股與美股判定邏輯，改善資料缺漏處理。"
-        )
-        message = TextMessage(text=announcement)
-        sent = 0
-        with ApiClient(configuration) as api_client:
-            api = MessagingApi(api_client)
-            for i in range(0, len(recipients), 500):
-                batch = recipients[i:i + 500]
-                api.multicast(MulticastRequest(to=batch, messages=[message]))
-                sent += len(batch)
-
-        logger.info("v1.1.0 更新公告推播完成，收件人數：%d", sent)
-        return f"v1.1.0 更新公告已推播給 {sent} 位客戶。"
-    except Exception as exc:
-        logger.exception("更新公告推播失敗")
-        return f"更新公告推播失敗：{type(exc).__name__}", 500
+    """舊版直接推播入口已停用，所有公告必須走 LINE 管理員指令與持久化防重複檢查。"""
+    return {
+        "status": "disabled",
+        "message": "此舊版推播入口已停用；請使用 LINE 管理員指令，公告會先經過持久化防重複檢查。"
+    }, 410
 
 
 @app.route("/callback", methods=["POST"])
