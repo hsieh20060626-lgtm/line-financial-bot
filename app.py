@@ -1848,6 +1848,8 @@ _executor = ThreadPoolExecutor(max_workers=8)
 def handle_message(event):
     user_text = event.message.text or ""
     user_id = getattr(event.source, "user_id", None)
+    if user_id:
+        _executor.submit(register_customer, user_id)
     try:
         future = _executor.submit(handle_command, user_text, user_id=user_id)
         try:
@@ -1903,6 +1905,8 @@ def handle_postback_data(data, picked):
 @handler.add(PostbackEvent)
 def handle_postback(event):
     user_id = getattr(event.source, "user_id", None)
+    if user_id:
+        _executor.submit(register_customer, user_id)
     data = event.postback.data or ""
     picked = (event.postback.params or {}).get("date")
     log_text = None
