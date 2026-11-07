@@ -1736,11 +1736,14 @@ def get_display_name(user_id):
 
 def record_usage(user_id, text):
     """
-    寫一行紀錄，例如：「某某 查詢 2330 股價」。
+    寫一行紀錄，並透過既有 Google Apps Script 自動維護 LINE User ID 名單。
     若有設定環境變數 ADMIN_USER_ID，會把值得注意的查詢推播給管理員
     （每次推播都會佔用 LINE 訊息額度）。
     """
     try:
+        # 沿用既有 GOOGLE_SHEET_WEB_APP_URL；寫入失敗不影響 LINE 回覆。
+        from google_sheet_registry import register_customer
+        register_customer(user_id)
         name = get_display_name(user_id)
         description, notable = describe_command(text)
         line = f"{name} {description}"
