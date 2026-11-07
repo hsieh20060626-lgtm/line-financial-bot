@@ -3,6 +3,8 @@ import re
 import time
 import hmac
 import logging
+import hashlib
+import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import date, timedelta
 
@@ -1894,11 +1896,82 @@ def callback():
 REPLY_DEADLINE = 20
 _executor = ThreadPoolExecutor(max_workers=8)
 
+# Webhook 防重複：避免 LINE 重送同一事件時再次執行指令。
+# 管理員公告另以「管理員 ID + 公告內容」做短時間防重複。
+# 注意：這是單一 Render process 的短期保護；跨重啟／多實例的持久化鎖需接資料庫。
+_webhook_dedupe_lock = threading.Lock()
+_webhook_event_seen = {}
+_announcement_seen = {}
+_WEBHOOK_DEDUPE_TTL = 10 * 60
+_ANNOUNCEMENT_DEDUPE_TTL = 5 * 60
+_DEDUPE_MAX_ITEMS = 5000
+
+
+def _prune_dedupe_cache(cache, now, ttl):
+    expired = [key for key, timestamp in cache.items() if now - timestamp > ttl]
+    for key in expired:
+        cache.pop(key, None)
+    while len(cache) > _DEDUPE_MAX_ITEMS:
+        cache.pop(next(iter(cache)))
+
+
+def claim_webhook_event(event):
+    """同一個 LINE webhook_event_id 在 TTL 內只允許處理一次。"""
+    event_id = getattr(event, "webhook_event_id", None)
+    if not event_id:
+        return True
+    now = time.time()
+    with _webhook_dedupe_lock:
+        _prune_dedupe_cache(_webhook_event_seen, now, _WEBHOOK_DEDUPE_TTL)
+        if event_id in _webhook_event_seen:
+            return False
+        _webhook_event_seen[event_id] = now
+        return True
+
+
+def claim_admin_announcement(user_id, text):
+    """阻擋管理員在短時間內重送完全相同的公告內容。"""
+    digest = hashlib.sha256(
+        (str(user_id) + "\\0" + text.strip()).encode("utf-8")
+    ).hexdigest()
+    now = time.time()
+    with _webhook_dedupe_lock:
+        _prune_dedupe_cache(_announcement_seen, now, _ANNOUNCEMENT_DEDUPE_TTL)
+        if digest in _announcement_seen:
+            return False
+        _announcement_seen[digest] = now
+        return True
+
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     user_text = event.message.text or ""
     user_id = getattr(event.source, "user_id", None)
+
+    # LINE 重送相同 webhook_event_id 時，整個事件直接略過，避免公告再次執行。
+    if not claim_webhook_event(event):
+        logger.warning("忽略重複 LINE Webhook 事件")
+        return
+
+    # 即使 LINE 將同一段文字包成不同事件，管理員公告 5 分鐘內也只處理一次。
+    if (
+        user_id
+        and ADMIN_USER_ID
+        and hmac.compare_digest(user_id, ADMIN_USER_ID)
+        and user_text.startswith("公告確認 ")
+        and not claim_admin_announcement(user_id, user_text)
+    ):
+        logger.warning("已阻擋短時間內重複的管理員公告")
+        try:
+            send_reply(
+                event.reply_token,
+                "這則公告剛剛已處理，為避免重複推播，5 分鐘內不會再次發送。",
+                quick_replies=quick_reply_items(),
+            )
+        except Exception:
+            logger.exception("回覆重複公告提醒失敗")
+        return
+
     if user_id:
         _executor.submit(register_customer, user_id)
     try:
