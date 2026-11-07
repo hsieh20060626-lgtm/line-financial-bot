@@ -1783,6 +1783,31 @@ def push_news_route():
         abort(500)
 
 
+@app.route("/test_customer_list", methods=["GET"])
+def test_customer_list_route():
+    """管理者唯讀測試：只回報有效 UID 數量，不顯示 UID、不發送訊息。"""
+    key = request.args.get("key", "")
+    if not CRON_SECRET or not hmac.compare_digest(key, CRON_SECRET):
+        abort(403)
+
+    try:
+        from google_sheet_registry import get_customer_ids
+
+        recipients = get_customer_ids()
+        return {
+            "status": "success",
+            "valid_unique_uid_count": len(recipients),
+            "message": "僅讀取名單，未發送任何 LINE 訊息。"
+        }
+    except Exception as exc:
+        logger.exception("客戶名單唯讀測試失敗")
+        return {
+            "status": "error",
+            "error": type(exc).__name__,
+            "message": "讀取失敗，未發送任何 LINE 訊息。"
+        }, 500
+
+
 @app.route("/push_update", methods=["GET", "POST"])
 def push_update_route():
     """部署完成後由管理者呼叫：/push_update?key=CRON_SECRET"""
