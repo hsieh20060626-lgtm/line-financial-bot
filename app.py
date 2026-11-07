@@ -1837,6 +1837,49 @@ def test_customer_list_route():
         }, 500
 
 
+@app.route("/test_announcement_dedupe", methods=["GET"])
+def test_announcement_dedupe_route():
+    """管理者防重複測試：只寫入測試紀錄，不讀取客戶名單、不發送 LINE 訊息。"""
+    key = request.args.get("key", "")
+    if not CRON_SECRET or not hmac.compare_digest(key, CRON_SECRET):
+        abort(403)
+
+    try:
+        from google_sheet_registry import claim_announcement
+
+        test_nonce = hashlib.sha256(str(time.time_ns()).encode("utf-8")).hexdigest()
+        test_user_id = "U" + ("0" * 32)
+        test_text = "川投顧防重複機制自動測試-" + test_nonce
+        first_event_id = "dedupe-test-" + test_nonce
+        second_event_id = "dedupe-test-content-" + test_nonce
+
+        first_claim = claim_announcement(first_event_id, test_user_id, test_text)
+        same_event_claim = claim_announcement(first_event_id, test_user_id, test_text)
+        same_content_claim = claim_announcement(second_event_id, test_user_id, test_text)
+
+        passed = (
+            first_claim is True
+            and same_event_claim is False
+            and same_content_claim is False
+        )
+        return {
+            "status": "success" if passed else "failed",
+            "first_unique_event_claimed": first_claim,
+            "same_event_rejected": same_event_claim is False,
+            "same_content_with_new_event_rejected": same_content_claim is False,
+            "line_messages_sent": 0,
+            "note": "只新增測試紀錄至公告紀錄工作表；未讀取客戶名單、未發送 LINE 訊息。"
+        }, (200 if passed else 500)
+    except Exception as exc:
+        logger.exception("公告防重複唯讀推播測試失敗")
+        return {
+            "status": "error",
+            "error": type(exc).__name__,
+            "line_messages_sent": 0,
+            "note": "測試失敗，未發送 LINE 訊息。"
+        }, 500
+
+
 @app.route("/push_update", methods=["GET", "POST"])
 def push_update_route():
     """部署完成後由管理者呼叫：/push_update?key=CRON_SECRET"""
