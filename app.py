@@ -8,7 +8,7 @@ from datetime import date, timedelta
 
 import requests
 import yfinance as yf
-from flask import Flask, request, abort
+from flask import Flask, request, abort, jsonify
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -26,10 +26,14 @@ from linebot.v3.messaging import (
     QuickReplyItem,
     MessageAction,
 )
-from linebot.v3.webhooks import MessageEvent, TextMessageContent, PostbackEvent
+from linebot.v3.webhooks import MessageEvent, TextMessageContent, PostbackEvent, FollowEvent, UnfollowEvent
 
 from news import fetch_news, news_card, query_news, news_recipients
 from usage import describe_command
+from customer_registry import (
+    register_customer, mark_unfollowed, database_configured, ensure_schema,
+    pending_release_recipients, mark_release_delivered,
+)
 from chips import fetch_top_institutional, fetch_market_summary
 from market_analysis import run_market_analysis, format_market_analysis
 
@@ -1741,6 +1745,8 @@ def record_usage(user_id, text):
     （每次推播都會佔用 LINE 訊息額度）。
     """
     try:
+        # 每次實際使用都更新持久名單；DATABASE_URL 未設定時安全略過。
+        register_customer(user_id, source="message")
         name = get_display_name(user_id)
         description, notable = describe_command(text)
         line = f"{name} {description}"
@@ -1781,6 +1787,70 @@ def push_news_route():
         abort(500)
 
 
+@app.route("/release_announcement", methods=["POST"])
+def release_announcement_route():
+    """僅供部署成功後的 GitHub Actions 呼叫；依版本與使用者記錄避免重複推播。"""
+    key = request.args.get("key", "")
+    if not CRON_SECRET or not hmac.compare_digest(key, CRON_SECRET):
+        abort(403)
+    if not database_configured():
+        return jsonify({"ok": False, "reason": "DATABASE_URL 尚未設定，公告未推播。"}), 409
+
+    try:
+        ensure_schema()
+        with open("VERSION", "r", encoding="utf-8") as version_file:
+            version = version_file.read().strip().lstrip("v")
+        with open("CHANGELOG.md", "r", encoding="utf-8") as changelog_file:
+            changelog = changelog_file.read()
+        pattern = r"^## v" + re.escape(version) + r"\s*(.*?)(?=^## v|\Z)"
+        match = re.search(pattern, changelog, flags=re.MULTILINE | re.DOTALL)
+        if not match:
+            raise RuntimeError(f"CHANGELOG.md 找不到 v{version} 更新內容")
+        details = []
+        for line in match.group(1).splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("### "):
+                details.append(line[4:])
+            elif line.startswith("- "):
+                details.append("・" + line[2:])
+        announcement = (
+            "📢 川投顧｜功能更新公告\n"
+            f"版本：v{version}\n\n"
+            + "\n".join(details)
+            + "\n\n感謝使用川投顧，歡迎體驗最新功能！"
+        )
+        recipients = pending_release_recipients(version)
+        if not recipients:
+            return jsonify({"ok": True, "version": version, "sent": 0,
+                            "message": "目前沒有可推播的已登記使用者。"}), 200
+
+        sent_count = 0
+        failed_count = 0
+        with ApiClient(configuration) as api_client:
+            api = MessagingApi(api_client)
+            for start in range(0, len(recipients), 500):
+                batch = recipients[start:start + 500]
+                try:
+                    api.multicast(MulticastRequest(
+                        to=batch, messages=[TextMessage(text=announcement[:4900])]
+                    ))
+                    mark_release_delivered(version, batch)
+                    sent_count += len(batch)
+                except Exception as exc:
+                    logger.exception("版本公告推播批次失敗（v%s）", version)
+                    mark_release_delivered(version, batch, error=str(exc))
+                    failed_count += len(batch)
+        return jsonify({
+            "ok": failed_count == 0, "version": version,
+            "sent": sent_count, "failed": failed_count,
+        }), (207 if failed_count else 200)
+    except Exception:
+        logger.exception("版本公告推播失敗")
+        abort(500)
+
+
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature", "")
@@ -1802,6 +1872,18 @@ def callback():
 # 因此查詢交給背景執行緒，超過期限就先回覆，不讓使用者乾等。
 REPLY_DEADLINE = 20
 _executor = ThreadPoolExecutor(max_workers=8)
+
+
+@handler.add(FollowEvent)
+def handle_follow(event):
+    user_id = getattr(event.source, "user_id", None)
+    register_customer(user_id, source="follow")
+
+
+@handler.add(UnfollowEvent)
+def handle_unfollow(event):
+    user_id = getattr(event.source, "user_id", None)
+    mark_unfollowed(user_id)
 
 
 @handler.add(MessageEvent, message=TextMessageContent)
@@ -1881,6 +1963,7 @@ def handle_postback(event):
         except Exception:
             logger.exception("備用回覆也失敗")
     finally:
+        register_customer(user_id, source="message")
         if log_text:
             record_usage(user_id, log_text)
 
