@@ -8,7 +8,7 @@ from datetime import date, timedelta
 
 import requests
 import yfinance as yf
-from flask import Flask, request, abort, jsonify
+from flask import Flask, request, abort
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -1783,50 +1783,6 @@ def push_news_route():
         abort(500)
 
 
-@app.route("/_internal/sheets-diagnostic", methods=["GET"])
-def sheets_diagnostic_route():
-    """Temporary read-only diagnostic; remove after verification."""
-    expected = os.getenv("SHEETS_DIAGNOSTIC_SECRET", "")
-    supplied = request.args.get("key", "")
-    if not expected or not hmac.compare_digest(supplied, expected):
-        abort(404)
-
-    endpoint = os.getenv("GOOGLE_SHEET_WEB_APP_URL", "").strip()
-    if not endpoint:
-        return jsonify({"ok": False, "error": "GOOGLE_SHEET_WEB_APP_URL_NOT_SET"}), 503
-
-    try:
-        response = requests.post(endpoint, json={"action": "get"}, timeout=10)
-        status = response.status_code
-        response.raise_for_status()
-        payload = response.json()
-    except requests.RequestException as exc:
-        logger.warning("Google Sheets 診斷請求失敗：%s", type(exc).__name__)
-        return jsonify({"ok": False, "error": type(exc).__name__}), 502
-    except ValueError:
-        return jsonify({"ok": False, "http_status": status, "error": "INVALID_JSON"}), 502
-
-    result = {
-        "ok": True,
-        "http_status": status,
-        "payload_type": type(payload).__name__,
-        "payload_keys": sorted(payload.keys()) if isinstance(payload, dict) else [],
-    }
-    if isinstance(payload, dict) and isinstance(payload.get("userIds"), list):
-        values = payload["userIds"]
-        valid = [v.strip() for v in values if isinstance(v, str) and v.strip().startswith("U") and len(v.strip()) >= 10]
-        result.update({
-            "userIds_type": "list",
-            "raw_entry_count": len(values),
-            "valid_uid_count": len(valid),
-            "unique_valid_uid_count": len(set(valid)),
-            "registry_reader_accepts": True,
-        })
-    else:
-        result["registry_reader_accepts"] = False
-    return jsonify(result)
-
-
 @app.route("/push_update", methods=["GET", "POST"])
 def push_update_route():
     """部署完成後由管理者呼叫：/push_update?key=CRON_SECRET"""
@@ -1975,41 +1931,6 @@ def handle_postback(event):
 # ==================================================
 # 13. 啟動（正式環境請用：gunicorn app:app）
 # ==================================================
-
-def run_sheets_startup_diagnostic():
-    """Temporary read-only check; logs counts and schema only, never customer IDs."""
-    if not os.getenv("SHEETS_DIAGNOSTIC_SECRET"):
-        return
-    endpoint = os.getenv("GOOGLE_SHEET_WEB_APP_URL", "").strip()
-    if not endpoint:
-        logger.error("SHEETS_DIAG result=missing_endpoint")
-        return
-    try:
-        response = requests.post(endpoint, json={"action": "get"}, timeout=10)
-        status = response.status_code
-        response.raise_for_status()
-        payload = response.json()
-        keys = sorted(payload.keys()) if isinstance(payload, dict) else []
-        if isinstance(payload, dict) and isinstance(payload.get("userIds"), list):
-            values = payload["userIds"]
-            valid = [v.strip() for v in values if isinstance(v, str) and v.strip().startswith("U") and len(v.strip()) >= 10]
-            logger.info(
-                "SHEETS_DIAG result=success http=%s payload=%s keys=%s raw=%s valid=%s unique=%s reader_accepts=true",
-                status, type(payload).__name__, keys, len(values), len(valid), len(set(valid))
-            )
-        else:
-            logger.warning(
-                "SHEETS_DIAG result=schema_mismatch http=%s payload=%s keys=%s reader_accepts=false",
-                status, type(payload).__name__, keys
-            )
-    except requests.RequestException as exc:
-        logger.error("SHEETS_DIAG result=request_error error=%s", type(exc).__name__)
-    except ValueError:
-        logger.error("SHEETS_DIAG result=invalid_json http=%s", locals().get("status", "unknown"))
-
-
-run_sheets_startup_diagnostic()
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
