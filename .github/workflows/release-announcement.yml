@@ -24,8 +24,8 @@ jobs:
           SERVICE_ID: srv-dbg3anqjnfac73f51n70
         run: |
           if [ -z "$RENDER_API_KEY" ]; then
-            echo "::warning::Missing GitHub secret RENDER_API_KEY; release announcement skipped."
-            exit 0
+            echo "::error::Missing GitHub secret RENDER_API_KEY; cannot verify deployment, so announcement is blocked."
+            exit 1
           fi
           for attempt in $(seq 1 60); do
             response=$(curl -fsS \
