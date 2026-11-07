@@ -33,9 +33,21 @@ def register_customer(user_id, session=None):
             timeout=5,
         )
         response.raise_for_status()
-        logger.info("Google 試算表客戶名單寫入成功")
+        payload = response.json()
+        if (
+            not isinstance(payload, dict)
+            or payload.get("status") != "success"
+            or payload.get("verified") is not True
+        ):
+            logger.warning("Google 試算表客戶名單寫入未通過驗證")
+            return False
+
+        if payload.get("added") is True:
+            logger.info("Google 試算表客戶名單新增並驗證成功")
+        else:
+            logger.info("Google 試算表客戶 UID 已存在，讀取驗證成功")
         return True
-    except (requests.RequestException, RuntimeError) as exc:
+    except (requests.RequestException, RuntimeError, ValueError) as exc:
         # Never log the endpoint, response body, or LINE User ID.
         logger.warning("Google 試算表客戶名單寫入失敗：%s", type(exc).__name__)
         return False
