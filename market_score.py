@@ -1,8 +1,15 @@
-"""Transparent weighted scoring for swing analysis; missing dimensions are reweighted."""
+"""Market-specific weighted scoring with explicit N/A and missing-data handling."""
 from __future__ import annotations
+
 import math
 
-WEIGHTS = {"technical": 0.30, "fundamental": 0.20, "chips": 0.20, "market": 0.15, "news": 0.15}
+WEIGHTS = {
+    "technical": 0.30,
+    "fundamental": 0.20,
+    "chips": 0.20,
+    "market": 0.15,
+    "news": 0.15,
+}
 
 
 def _clamp(value):
@@ -41,8 +48,10 @@ def score_technical(data):
 
 
 def score_fundamental(data):
+    if data and data.get("not_applicable"):
+        return None, [data.get("reason") or "此標的不適用一般公司基本面評分"]
     if not data or not data.get("available"):
-        return None, ["基本面資料不足或標的不適用"]
+        return None, [((data or {}).get("reason") or "基本面資料缺失；不以 0 分計算")]
     score, used, reasons = 50.0, 0, []
     growth = data.get("revenue_growth")
     earnings = data.get("earnings_growth")
@@ -63,15 +72,35 @@ def score_fundamental(data):
         score += max(-8, min(8, margin * 20)); used += 1
     if pe is not None and pe > 0:
         score += 4 if pe < 20 else 0 if pe < 35 else -5 if pe < 60 else -10
-        used += 1; reasons.append(f"本益比 {pe:.1f} 倍")
+        used += 1
+        reasons.append(f"本益比 {pe:.1f} 倍")
     if not used:
-        return None, ["可用基本面欄位不足"]
+        return None, ["可用基本面欄位不足；資料缺失不以 0 分計算"]
     return _clamp(score), reasons
 
 
 def score_chips(data):
+    if data and data.get("not_applicable"):
+        return None, [data.get("reason") or "此市場／標的不適用此籌碼指標"]
+
+    if data and data.get("market") == "US" and data.get("method") == "volume_price_proxy":
+        change = data.get("price_change_pct")
+        ratio = data.get("volume_ratio")
+        try:
+            change, ratio = float(change), float(ratio)
+            if not (math.isfinite(change) and math.isfinite(ratio) and ratio > 0):
+                raise ValueError
+        except (TypeError, ValueError):
+            return None, ["美股量價代理資料不足（需要漲跌幅及有效成交量比）"]
+        # This is a disclosed price/volume proxy, not institutional flow or holdings.
+        impact = max(-20.0, min(20.0, change * min(ratio, 2.0) * 4.0))
+        return _clamp(50.0 + impact), [
+            f"美股量價代理：漲跌 {change:+.2f}%，成交量為 20 日均量 {ratio:.2f} 倍",
+            "此分數不是機構持倉或即時法人買賣超"
+        ]
+
     if not data or not data.get("available"):
-        return None, ["籌碼資料缺失；美股不套用台股三大法人資料"]
+        return None, [((data or {}).get("reason") or "籌碼資料缺失；不以 0 分計算")]
     nets = [data.get(k) for k in ("foreign_net", "trust_net", "dealer_net")]
     known = [v for v in nets if v is not None]
     if not known:
@@ -116,13 +145,57 @@ def calculate_market_score(technical, fundamental, chips, market, news, news_sco
         "market": score_market(market),
         "news": score_news(news, news_score),
     }
-    available_weight = sum(WEIGHTS[k] for k, (score, _) in details.items() if score is not None)
-    if not available_weight:
-        return {"score": None, "signal": "資料不足，停止評分", "dimensions": details,
-                "data_completeness": 0.0, "effective_weights": {}}
-    total = sum(WEIGHTS[k] * score for k, (score, _) in details.items() if score is not None) / available_weight
-    signal = ("強勢偏多" if total >= 80 else "偏多" if total >= 65 else
-              "中性觀望" if total >= 45 else "偏空" if total >= 30 else "強勢偏空")
-    effective = {k: round(WEIGHTS[k] / available_weight, 4) for k, (v, _) in details.items() if v is not None}
-    return {"score": round(total, 1), "signal": signal, "dimensions": details,
-            "data_completeness": round(available_weight * 100, 1), "effective_weights": effective}
+
+    not_applicable = [
+        key for key in details
+        if (key == "fundamental" and fundamental and fundamental.get("not_applicable"))
+        or (key == "chips" and chips and chips.get("not_applicable"))
+    ]
+    applicable_weight = sum(
+        WEIGHTS[key] for key in details if key not in not_applicable
+    )
+    scored_weight = sum(
+        WEIGHTS[key] for key, (value, _) in details.items() if value is not None
+    )
+    missing_dimensions = [
+        key for key, (value, _) in details.items()
+        if value is None and key not in not_applicable
+    ]
+
+    if not scored_weight:
+        return {
+            "score": None,
+            "signal": "資料不足，停止評分",
+            "dimensions": details,
+            "data_completeness": 0.0,
+            "applicable_weight": round(applicable_weight * 100, 1),
+            "scored_weight": 0.0,
+            "not_applicable_dimensions": not_applicable,
+            "missing_dimensions": missing_dimensions,
+            "effective_weights": {},
+        }
+
+    total = sum(
+        WEIGHTS[key] * value
+        for key, (value, _) in details.items() if value is not None
+    ) / scored_weight
+    signal = (
+        "強勢偏多" if total >= 80 else "偏多" if total >= 65 else
+        "中性觀望" if total >= 45 else "偏空" if total >= 30 else "強勢偏空"
+    )
+    effective = {
+        key: round(WEIGHTS[key] / scored_weight, 4)
+        for key, (value, _) in details.items() if value is not None
+    }
+    completeness = (scored_weight / applicable_weight * 100) if applicable_weight else 100.0
+    return {
+        "score": round(total, 1),
+        "signal": signal,
+        "dimensions": details,
+        "data_completeness": round(completeness, 1),
+        "applicable_weight": round(applicable_weight * 100, 1),
+        "scored_weight": round(scored_weight * 100, 1),
+        "not_applicable_dimensions": not_applicable,
+        "missing_dimensions": missing_dimensions,
+        "effective_weights": effective,
+    }
