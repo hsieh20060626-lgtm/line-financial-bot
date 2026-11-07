@@ -1976,5 +1976,40 @@ def handle_postback(event):
 # 13. 啟動（正式環境請用：gunicorn app:app）
 # ==================================================
 
+def run_sheets_startup_diagnostic():
+    """Temporary read-only check; logs counts and schema only, never customer IDs."""
+    if not os.getenv("SHEETS_DIAGNOSTIC_SECRET"):
+        return
+    endpoint = os.getenv("GOOGLE_SHEET_WEB_APP_URL", "").strip()
+    if not endpoint:
+        logger.error("SHEETS_DIAG result=missing_endpoint")
+        return
+    try:
+        response = requests.post(endpoint, json={"action": "get"}, timeout=10)
+        status = response.status_code
+        response.raise_for_status()
+        payload = response.json()
+        keys = sorted(payload.keys()) if isinstance(payload, dict) else []
+        if isinstance(payload, dict) and isinstance(payload.get("userIds"), list):
+            values = payload["userIds"]
+            valid = [v.strip() for v in values if isinstance(v, str) and v.strip().startswith("U") and len(v.strip()) >= 10]
+            logger.info(
+                "SHEETS_DIAG result=success http=%s payload=%s keys=%s raw=%s valid=%s unique=%s reader_accepts=true",
+                status, type(payload).__name__, keys, len(values), len(valid), len(set(valid))
+            )
+        else:
+            logger.warning(
+                "SHEETS_DIAG result=schema_mismatch http=%s payload=%s keys=%s reader_accepts=false",
+                status, type(payload).__name__, keys
+            )
+    except requests.RequestException as exc:
+        logger.error("SHEETS_DIAG result=request_error error=%s", type(exc).__name__)
+    except ValueError:
+        logger.error("SHEETS_DIAG result=invalid_json http=%s", locals().get("status", "unknown"))
+
+
+run_sheets_startup_diagnostic()
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
