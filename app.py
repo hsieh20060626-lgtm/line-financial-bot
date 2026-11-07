@@ -32,6 +32,7 @@ from news import fetch_news, news_card, query_news, news_recipients
 from usage import describe_command
 from chips import fetch_top_institutional, fetch_market_summary
 from market_analysis import run_market_analysis, format_market_analysis
+from google_sheet_registry import register_customer
 
 
 # ==================================================
@@ -1742,8 +1743,6 @@ def record_usage(user_id, text):
     """
     try:
         # 沿用既有 GOOGLE_SHEET_WEB_APP_URL；寫入失敗不影響 LINE 回覆。
-        from google_sheet_registry import register_customer
-        register_customer(user_id)
         name = get_display_name(user_id)
         description, notable = describe_command(text)
         line = f"{name} {description}"
