@@ -1891,7 +1891,10 @@ def callback():
 # LINE 的回覆權杖有時效，查詢拖太久就會失效（Invalid reply token）。
 # 因此查詢交給背景執行緒，超過期限就先回覆，不讓使用者乾等。
 REPLY_DEADLINE = 20
+# Webhook 只負責驗證與排入背景工作，必須快速回 HTTP 200；
+# 避免查詢或 LINE 回覆耗時，讓 LINE 判定逾時後重送同一事件。
 _executor = ThreadPoolExecutor(max_workers=8)
+_event_executor = ThreadPoolExecutor(max_workers=4)
 
 # Webhook 防重複：避免 LINE 重送同一事件時再次執行指令。
 # 管理員公告另以「管理員 ID + 公告內容」做短時間防重複。
@@ -1942,6 +1945,15 @@ def claim_admin_announcement(user_id, text):
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
+    """快速排入背景工作，讓 webhook 儘快回應 LINE。"""
+    try:
+        _event_executor.submit(_process_message_event, event)
+    except Exception:
+        # 不讓業務處理錯誤回傳 5xx，避免 LINE 重送造成副作用。
+        logger.exception("LINE 訊息事件排程失敗")
+
+
+def _process_message_event(event):
     user_text = event.message.text or ""
     user_id = getattr(event.source, "user_id", None)
 
@@ -2044,6 +2056,17 @@ def handle_postback_data(data, picked):
 
 @handler.add(PostbackEvent)
 def handle_postback(event):
+    """快速排入背景工作，讓 webhook 儘快回應 LINE。"""
+    try:
+        _event_executor.submit(_process_postback_event, event)
+    except Exception:
+        logger.exception("LINE Postback 事件排程失敗")
+
+
+def _process_postback_event(event):
+    if not claim_webhook_event(event):
+        logger.warning("忽略重複 LINE Postback 事件")
+        return
     user_id = getattr(event.source, "user_id", None)
     if user_id:
         _executor.submit(register_customer, user_id)
