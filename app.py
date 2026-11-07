@@ -1953,24 +1953,37 @@ def handle_message(event):
         logger.warning("忽略重複 LINE Webhook 事件")
         return
 
-    # 即使 LINE 將同一段文字包成不同事件，管理員公告 5 分鐘內也只處理一次。
+    # 管理員公告必須先取得 Google 試算表的持久化鎖；失敗時採 fail-closed。
     if (
         user_id
         and ADMIN_USER_ID
         and hmac.compare_digest(user_id, ADMIN_USER_ID)
         and user_text.startswith("公告確認 ")
-        and not claim_admin_announcement(user_id, user_text)
     ):
-        logger.warning("已阻擋短時間內重複的管理員公告")
+        announcement = user_text[len("公告確認 "):].strip()
+        if not announcement:
+            send_reply(event.reply_token, "公告內容不可為空。", quick_replies=quick_reply_items())
+            return
         try:
+            from google_sheet_registry import claim_announcement
+            event_id = getattr(event, "webhook_event_id", None)
+            claimed = claim_announcement(event_id, user_id, announcement)
+        except Exception:
+            logger.exception("公告持久化防重複檢查失敗；已阻止推播")
             send_reply(
                 event.reply_token,
-                "這則公告剛剛已處理，為避免重複推播，5 分鐘內不會再次發送。",
+                "公告防重複紀錄目前無法確認，因此這次沒有發送公告。請稍後再試。",
                 quick_replies=quick_reply_items(),
             )
-        except Exception:
-            logger.exception("回覆重複公告提醒失敗")
-        return
+            return
+        if not claimed:
+            logger.warning("Google 試算表已存在相同公告事件或近期公告")
+            send_reply(
+                event.reply_token,
+                "這則公告已處理或正在處理，為避免重複推播，本次已取消。",
+                quick_replies=quick_reply_items(),
+            )
+            return
 
     if user_id:
         _executor.submit(register_customer, user_id)
