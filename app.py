@@ -1611,17 +1611,80 @@ def handle_command(text, user_id=None):
         if len(announcement) > 4500:
             return "公告內容過長，請控制在 4500 字以內。", default_quick
         try:
-            from google_sheet_registry import get_customer_ids
-            recipients = get_customer_ids()
+            from google_sheet_registry import get_customer_list_details
+            list_details = get_customer_list_details()
+            recipients = list_details["user_ids"]
+            total_rows = list_details["total_rows"]
+            invalid_count = list_details["invalid_count"]
+            duplicate_count = list_details["duplicate_count"]
+
+            logger.info(
+                "公告名單讀取完成：試算表UID列數=%d，有效唯一UID=%d，格式無效=%d，重複=%d",
+                total_rows, len(recipients), invalid_count, duplicate_count
+            )
             if not recipients:
-                return "客戶名單目前為空，未發送公告。", default_quick
+                logger.warning("公告未推播：有效唯一UID為 0")
+                return "客戶名單目前沒有有效 UID，未發送公告。", default_quick
+
+            # 僅記錄不可逆的 UID 指紋，供管理員比對名單；不把完整 LINE UID 寫入 Render。
+            recipient_fingerprints = {
+                hashlib.sha256(
+                    (LINE_CHANNEL_SECRET + "\\0" + uid).encode("utf-8")
+                ).hexdigest()[:16]: uid
+                for uid in recipients
+            }
+            for fingerprint in recipient_fingerprints:
+                logger.info("公告收件名單 UID 指紋：%s", fingerprint)
+
             message = TextMessage(text=announcement)
+            accepted_count = 0
+            failed_count = 0
+            batch_count = 0
             with ApiClient(configuration) as api_client:
                 api = MessagingApi(api_client)
-                for i in range(0, len(recipients), 500):
-                    api.multicast(MulticastRequest(to=recipients[i:i + 500], messages=[message]))
-            logger.info("管理員公告推播完成，收件人數：%d", len(recipients))
-            return f"公告已成功送出，收件人數：{len(recipients)} 位。", default_quick
+                for batch_number, start in enumerate(range(0, len(recipients), 500), start=1):
+                    batch = recipients[start:start + 500]
+                    batch_count += 1
+                    try:
+                        response = api.multicast(
+                            MulticastRequest(to=batch, messages=[message])
+                        )
+                        accepted_count += len(batch)
+                        response_messages = getattr(response, "sent_messages", None)
+                        response_message_count = (
+                            len(response_messages)
+                            if isinstance(response_messages, (list, tuple))
+                            else None
+                        )
+                        logger.info(
+                            "公告批次 API 已接受：批次=%d，批次收件人=%d，回應訊息數=%s",
+                            batch_number, len(batch),
+                            response_message_count if response_message_count is not None else "未提供"
+                        )
+                    except Exception as batch_exc:
+                        failed_count += len(batch)
+                        logger.exception(
+                            "公告批次 API 呼叫失敗：批次=%d，批次收件人=%d，錯誤類型=%s",
+                            batch_number, len(batch), type(batch_exc).__name__
+                        )
+
+            logger.info(
+                "公告推播請求統計：名單有效UID=%d，批次=%d，API接受批次涵蓋UID=%d，失敗批次涵蓋UID=%d",
+                len(recipients), batch_count, accepted_count, failed_count
+            )
+            if failed_count:
+                return (
+                    f"公告推播部分失敗。名單 {len(recipients)} 位；"
+                    f"LINE API 接受請求涵蓋 {accepted_count} 位；"
+                    f"失敗批次涵蓋 {failed_count} 位。請查看 Render 紀錄。",
+                    default_quick
+                )
+            return (
+                f"公告已送出 LINE API。名單 {len(recipients)} 位；"
+                f"API 接受請求涵蓋 {accepted_count} 位。"
+                "注意：API 接受不等於每位使用者已實際收到。",
+                default_quick
+            )
         except Exception as exc:
             logger.exception("管理員公告推播失敗")
             return f"公告推播失敗：{type(exc).__name__}，請檢查系統紀錄。", default_quick
