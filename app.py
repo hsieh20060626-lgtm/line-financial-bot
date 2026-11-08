@@ -1766,26 +1766,14 @@ def get_display_name(user_id):
 
 def record_usage(user_id, text):
     """
-    寫一行紀錄，並透過既有 Google Apps Script 自動維護 LINE User ID 名單。
-    若有設定環境變數 ADMIN_USER_ID，會把值得注意的查詢推播給管理員
-    （每次推播都會佔用 LINE 訊息額度）。
+    只將使用者操作摘要寫入 Render Logs。
+    不再透過 LINE 推播給管理員，避免干擾管理員聊天室及消耗訊息額度。
     """
     try:
-        # 沿用既有 GOOGLE_SHEET_WEB_APP_URL；寫入失敗不影響 LINE 回覆。
         name = get_display_name(user_id)
-        description, notable = describe_command(text)
+        description, _ = describe_command(text)
         line = f"{name} {description}"
         logger.info("📝 使用紀錄：%s", line)
-
-        admin_id = os.getenv("ADMIN_USER_ID", "").strip()
-        if admin_id and notable and user_id and user_id != admin_id:
-            with ApiClient(configuration) as api_client:
-                MessagingApi(api_client).push_message(
-                    PushMessageRequest(
-                        to=admin_id,
-                        messages=[TextMessage(text=f"📝 {line}")],
-                    )
-                )
     except Exception:
         logger.exception("使用紀錄失敗")
 
