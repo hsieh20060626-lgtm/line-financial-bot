@@ -53,8 +53,8 @@ def register_customer(user_id, session=None):
         return False
 
 
-def get_customer_ids(session=None):
-    """Read all registered LINE IDs; fail closed if the response is malformed."""
+def get_customer_list_details(session=None):
+    """Return valid unique UIDs and safe list statistics for broadcast auditing."""
     client = session or requests
     try:
         response = client.post(_endpoint(), json={"action": "get"}, timeout=8)
@@ -66,16 +66,35 @@ def get_customer_ids(session=None):
     if not isinstance(payload, dict) or not isinstance(payload.get("userIds"), list):
         raise RuntimeError("Google 試算表名單回傳格式不符，已停止推播")
 
-    # Keep only plausible LINE user ID strings and remove duplicates while
-    # preserving the sheet's original order.
+    raw_ids = payload["userIds"]
     ids, seen = [], set()
-    for value in payload["userIds"]:
-        if isinstance(value, str):
-            uid = value.strip()
-            if uid.startswith("U") and len(uid) >= 10 and uid not in seen:
-                seen.add(uid)
-                ids.append(uid)
-    return ids
+    invalid_count = 0
+    duplicate_count = 0
+    for value in raw_ids:
+        if not isinstance(value, str):
+            invalid_count += 1
+            continue
+        uid = value.strip()
+        if not uid.startswith("U") or len(uid) < 10:
+            invalid_count += 1
+            continue
+        if uid in seen:
+            duplicate_count += 1
+            continue
+        seen.add(uid)
+        ids.append(uid)
+
+    return {
+        "user_ids": ids,
+        "total_rows": len(raw_ids),
+        "invalid_count": invalid_count,
+        "duplicate_count": duplicate_count,
+    }
+
+
+def get_customer_ids(session=None):
+    """Backward-compatible helper returning only valid unique LINE IDs."""
+    return get_customer_list_details(session=session)["user_ids"]
 
 
 def claim_announcement(event_id, user_id, announcement_text, session=None):
