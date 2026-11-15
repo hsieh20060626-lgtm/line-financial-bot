@@ -252,7 +252,7 @@ def _us_news_queries(token, company_name=None):
     """建立以美國主流財經媒體為主的個股新聞搜尋條件。"""
     identity = f'"{token}"'
     if company_name:
-        identity += f' "{company_name}"'
+        identity = f'("{token}" OR "{company_name}")'
     return [
         f'site:reuters.com {identity} stock when:7d',
         f'site:finance.yahoo.com {identity} stock when:7d',
