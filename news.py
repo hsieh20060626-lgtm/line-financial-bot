@@ -7,7 +7,6 @@
 新聞來源：Google 新聞 RSS，用 site: 指定各家財經媒體，只取標題與連結。
 """
 
-import os
 import time
 import logging
 import xml.etree.ElementTree as ET
@@ -176,9 +175,14 @@ def query_news():
 # ==================================================
 
 def news_recipients():
-    """從環境變數 NEWS_USER_IDS 讀取收新聞的人（逗號分隔）。"""
-    raw = os.getenv("NEWS_USER_IDS", "")
-    return [uid.strip() for uid in raw.split(",") if uid.strip()]
+    """每日新聞預設推播給 Google 試算表中所有有效、去重的川投顧客戶。
+
+    名單讀取失敗時讓例外向上傳遞，由 /push_news 回報失敗並停止推播；
+    不回退到手動環境變數名單，避免漏發或誤發。
+    """
+    from google_sheet_registry import get_customer_ids
+
+    return get_customer_ids()
 
 
 # ==================================================
