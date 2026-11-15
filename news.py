@@ -226,19 +226,67 @@ def _fetch_search_items(query, source_label, limit=5):
     return items
 
 
-def fetch_symbol_news(symbol):
-    """個股近七日新聞；沒有可解析發布時間的新聞不納入分析。"""
+# 常見美股代碼對應公司名稱；名稱與代碼雙重查詢可降低同名誤配。
+US_COMPANY_NAMES = {
+    "AAPL": "Apple",
+    "MSFT": "Microsoft",
+    "NVDA": "NVIDIA",
+    "AMZN": "Amazon",
+    "GOOGL": "Alphabet",
+    "GOOG": "Alphabet",
+    "META": "Meta Platforms",
+    "TSLA": "Tesla",
+    "AVGO": "Broadcom",
+    "AMD": "Advanced Micro Devices",
+    "NFLX": "Netflix",
+    "INTC": "Intel",
+    "ORCL": "Oracle",
+    "CRM": "Salesforce",
+    "PLTR": "Palantir",
+    "QQQ": "Invesco QQQ",
+    "SPY": "SPDR S&P 500 ETF",
+}
+
+
+def _us_news_queries(token, company_name=None):
+    """建立以美國主流財經媒體為主的個股新聞搜尋條件。"""
+    identity = f'"{token}"'
+    if company_name:
+        identity += f' "{company_name}"'
+    return [
+        f'site:reuters.com {identity} stock when:7d',
+        f'site:finance.yahoo.com {identity} stock when:7d',
+        f'site:cnbc.com {identity} stock when:7d',
+        f'site:bloomberg.com {identity} stock when:7d',
+    ]
+
+
+def fetch_symbol_news(symbol, market="US", company_name=None):
+    """取得近七日個股新聞；美股分來源搜尋，台股保留中英文代碼搜尋。"""
     token = str(symbol).strip().upper()
-    queries = [f'"{token}" stock when:7d', f'"{token}" 股價 when:7d']
+    if market == "TW":
+        queries = [
+            f'"{token}" 台股 when:7d',
+            f'"{token}" 股價 when:7d',
+        ]
+        source_labels = ["Google News / 台灣財經媒體"]
+    else:
+        company_name = company_name or US_COMPANY_NAMES.get(token)
+        queries = _us_news_queries(token, company_name)
+        source_labels = ["Reuters", "Yahoo Finance", "CNBC", "Bloomberg"]
+
     results, seen = [], set()
-    for query in queries:
-        for item in _fetch_search_items(query, "Google News", limit=4):
-            if item["title"] not in seen:
-                seen.add(item["title"])
+    for index, query in enumerate(queries):
+        label = source_labels[min(index, len(source_labels) - 1)]
+        for item in _fetch_search_items(query, f"Google News / {label}", limit=3):
+            # Keep source diversity but remove repeated syndicated headlines.
+            key = item["title"].casefold().strip()
+            if key not in seen:
+                seen.add(key)
                 results.append(item)
-        if len(results) >= 5:
+        if len(results) >= 8:
             break
-    return results[:5]
+    return results[:8]
 
 
 def fetch_macro_news():
