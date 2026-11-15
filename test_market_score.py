@@ -73,8 +73,32 @@ class MarketScoreTests(unittest.TestCase):
 
     def test_market_score_uses_available_benchmarks(self):
         result, _ = score_market({"SP500": {"change_pct": 1.0}})
-        self.assertEqual(result, 54.0)
+        self.assertEqual(result, 58.0)
 
+    def test_vix_high_level_reduces_market_score_as_risk_overlay(self):
+        calm, _ = score_market({"SP500": {"change_pct": 0.0}, "VIX": {"close": 15.0}}, "US")
+        stressed, reasons = score_market({"SP500": {"change_pct": 0.0}, "VIX": {"close": 35.0}}, "US")
+        self.assertLess(stressed, calm)
+        self.assertTrue(any("波動風險調整" in reason for reason in reasons))
+
+    def test_vix_change_is_not_treated_as_bullish_index_return(self):
+        score, _ = score_market({"SP500": {"change_pct": 0.0}, "VIX": {"close": 30.0, "change_pct": 5.0}}, "US")
+        self.assertLess(score, 50.0)
+
+    def test_etf_quality_scores_available_fund_specific_metrics(self):
+        from market_score import score_etf_quality
+        score, reasons = score_etf_quality({
+            "is_etf": True, "annual_expense_ratio": 0.004,
+            "total_assets": 3_000_000_000, "average_volume": 1_000_000,
+            "premium_discount_pct": 0.1
+        })
+        self.assertIsNotNone(score)
+        self.assertTrue(any("NAV 折溢價" in reason for reason in reasons))
+
+    def test_etf_quality_missing_inputs_remain_unscored(self):
+        from market_score import score_etf_quality
+        score, _ = score_etf_quality({"is_etf": True})
+        self.assertIsNone(score)
     def test_news_is_not_scored_without_ai_sentiment(self):
         result = calculate_market_score({}, {}, {}, {}, [{"title": "recent news"}])
         self.assertIsNone(result["dimensions"]["news"][0])
