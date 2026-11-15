@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import math
 from datetime import datetime, timezone
 
 from indicators import analyze_technical_indicators
@@ -69,7 +70,7 @@ def run_market_analysis(user_symbol: str) -> dict:
     payload["ai"] = explain_analysis(payload)
     payload["score"] = calculate_market_score(
         technical, fundamental, chips, benchmarks, news_items,
-        news_score=payload["ai"].get("news_score")
+        news_score=payload["ai"].get("news_score"), market_type=market
     )
     _CACHE[cache_key] = {"cached_at": datetime.now(timezone.utc), "payload": payload}
     return payload
@@ -270,7 +271,7 @@ def format_market_analysis(data: dict, position: str | None = None) -> dict:
         _text_component(f'日 K：{daily.get("trend", "未提供")}　｜　週 K：{weekly.get("trend", "未提供")}（週 K 最新一根可能尚未收完）', "sm"),
     ]
 
-    if fundamental.get("not_applicable"):
+    if fundamental.get("not_applicable") or fundamental.get("is_etf"):
         body += [
             _section_title("基本面"),
             _text_component(fundamental.get("reason", "標的不適用一般公司基本面指標。"), "sm"),
