@@ -727,7 +727,7 @@ def help_text():
 
 📊 波段市場訊號分析
 
-輸入「分析 2330」或「分析 AAPL」，以日 K＋週 K、基本面、籌碼面、市場環境與近期新聞進行加權評分。
+輸入「分析 2330」或「分析 AAPL」，先選擇「已經持有／尚未持有」，再依持有狀態提供加碼／持有／減碼，或買進／觀望／暫不買進的相對支持度評分。
 
 🏦 2. 三大法人與籌碼
 
@@ -1707,20 +1707,37 @@ def handle_command(text, user_id=None):
     if command in ("其他資訊", "其他", "other_info"):
         return other_info_text(), default_quick
 
-    # 波段市場訊號分析：日 K＋週 K、五大面向加權評分
-    analysis_match = re.fullmatch(r"分析\s+([\w.^=_-]{1,20})", text, flags=re.IGNORECASE)
-    if analysis_match and valid_target(analysis_match.group(1)):
+    # 波段市場訊號分析：先讓使用者選擇持有狀態，再產生對應操作評分。
+    analysis_choice = re.fullmatch(r"分析(持有|未持有)\s+([\w.^=_-]{1,20})", text, flags=re.IGNORECASE)
+    if analysis_choice and valid_target(analysis_choice.group(2)):
         try:
-            analysis_symbol = analysis_match.group(1)
+            analysis_symbol = analysis_choice.group(2)
             if re.search(r"[\u4e00-\u9fff]", analysis_symbol):
                 analysis_symbol = resolve_tw_stock_code(analysis_symbol)
                 if not analysis_symbol:
-                    return f"找不到「{analysis_match.group(1)}」的台股代號，請確認公司名稱。", default_quick
+                    return f"找不到「{analysis_choice.group(2)}」的台股代號，請確認公司名稱。", default_quick
+            position = "held" if analysis_choice.group(1) == "持有" else "unheld"
             result = run_market_analysis(analysis_symbol)
-            return format_market_analysis(result), default_quick
+            return format_market_analysis(result, position=position), default_quick
         except Exception as exc:
             logger.exception("市場分析失敗")
             return f"市場分析暫時失敗：{type(exc).__name__}。請稍後再試。", default_quick
+
+    analysis_match = re.fullmatch(r"分析\s+([\w.^=_-]{1,20})", text, flags=re.IGNORECASE)
+    if analysis_match and valid_target(analysis_match.group(1)):
+        analysis_symbol = analysis_match.group(1)
+        if re.search(r"[\u4e00-\u9fff]", analysis_symbol):
+            analysis_symbol = resolve_tw_stock_code(analysis_symbol)
+            if not analysis_symbol:
+                return f"找不到「{analysis_match.group(1)}」的台股代號，請確認公司名稱。", default_quick
+        choice_quick = build_quick([
+            ("已經持有", f"分析持有 {analysis_symbol}"),
+            ("尚未持有", f"分析未持有 {analysis_symbol}"),
+        ])
+        return (
+            f"準備分析 {analysis_symbol}。請先選擇目前的持有狀態：",
+            choice_quick,
+        )
 
     # 全市場 法人／外資／投信 買超、賣超前五名
     if command in RANK_COMMANDS:

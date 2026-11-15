@@ -21,14 +21,20 @@ class GoogleSheetRegistryTests(unittest.TestCase):
     def test_posts_legacy_add_payload(self):
         with patch.dict("os.environ", {"GOOGLE_SHEET_WEB_APP_URL": "https://example.test/exec"}):
             session = Mock()
-            session.post.return_value = Mock(status_code=200)
+            response = Mock(status_code=200)
+            response.json.return_value = {
+                "status": "success",
+                "verified": True,
+                "added": True,
+            }
+            session.post.return_value = response
             self.assertTrue(register_customer("U-test", session=session))
             session.post.assert_called_once_with(
                 "https://example.test/exec",
                 json={"action": "add", "userId": "U-test"},
                 timeout=5,
             )
-            session.post.return_value.raise_for_status.assert_called_once()
+            response.raise_for_status.assert_called_once()
 
     def test_http_error_does_not_raise_to_webhook(self):
         with patch.dict("os.environ", {"GOOGLE_SHEET_WEB_APP_URL": "https://example.test/exec"}):

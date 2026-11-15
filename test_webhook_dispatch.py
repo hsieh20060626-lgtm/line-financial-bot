@@ -60,9 +60,15 @@ class WebhookDispatchTests(unittest.TestCase):
                 return CompletedFuture(None)
             return CompletedFuture(fn(*args, **kwargs))
 
+        registry_details = {
+            "user_ids": ["U123456789012345678901234"],
+            "total_rows": 1,
+            "invalid_count": 0,
+            "duplicate_count": 0,
+        }
         with (
             patch("google_sheet_registry.claim_announcement", side_effect=[True, False]),
-            patch("google_sheet_registry.get_customer_ids", return_value=["U123456789012345678901234"]),
+            patch("google_sheet_registry.get_customer_list_details", return_value=registry_details),
             patch.object(bot._executor, "submit", side_effect=inline_submit),
             patch.object(bot, "send_reply"),
             patch.object(bot, "record_usage"),

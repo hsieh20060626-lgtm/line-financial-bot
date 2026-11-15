@@ -111,6 +111,25 @@ def _table_row(item: str, score: str, explanation: str, header: bool = False) ->
     }
 
 
+def _recommendation_score_component(scores: dict) -> dict:
+    """將三種操作方向的相對支持度並排顯示。"""
+    columns = []
+    for name, value in scores.items():
+        columns.append({
+            "type": "box", "layout": "vertical", "flex": 1,
+            "backgroundColor": "#F3F6F8", "cornerRadius": "md",
+            "paddingAll": "sm", "spacing": "xs",
+            "contents": [
+                _text_component(name, "xs", "#566573", "bold", align="center"),
+                _text_component(f"{value} 分", "md", "#1F618D", "bold", align="center"),
+            ],
+        })
+    return {
+        "type": "box", "layout": "horizontal", "spacing": "sm",
+        "contents": columns,
+    }
+
+
 def _section_title(text: str) -> dict:
     return {
         "type": "text", "text": text, "size": "md", "weight": "bold",
@@ -118,7 +137,54 @@ def _section_title(text: str) -> dict:
     }
 
 
-def format_market_analysis(data: dict) -> dict:
+def recommendation_for_position(score: dict, position: str) -> dict:
+    """依總分與資料完整度，產生持有／未持有情境的相對支持度（非獲利機率）。"""
+    total = score.get("score")
+    completeness = float(score.get("data_completeness") or 0)
+    if total is None or completeness < 40:
+        return {
+            "position": position, "action": "資料不足，暫不提供操作方向",
+            "scores": {}, "reason": "有效資料覆蓋率低於 40%，避免依不足資料給出操作方向",
+        }
+
+    total = max(0.0, min(100.0, float(total)))
+    if position == "held":
+        names = ("加碼／買進", "持有", "減碼／賣出")
+        raw = [
+            max(total - 60.0, 0.0),
+            max(30.0 - abs(total - 50.0), 0.0),
+            max(45.0 - total, 0.0),
+        ]
+        action = "偏向加碼／買進" if total >= 65 else (
+            "偏向持有" if total >= 45 else "偏向減碼／賣出"
+        )
+    else:
+        names = ("買進", "等待觀望", "暫不買進")
+        raw = [
+            max(total - 40.0, 0.0),
+            max(30.0 - abs(total - 55.0), 0.0),
+            max(40.0 - total, 0.0),
+        ]
+        action = "偏向買進" if total >= 65 else (
+            "偏向等待觀望" if total >= 45 else "暫不建議進場"
+        )
+
+    denominator = sum(raw)
+    if denominator <= 0:
+        values = [0, 100, 0]
+    else:
+        values = [round(value / denominator * 100) for value in raw]
+        # 修正四捨五入差額，確保三項合計 100。
+        values[values.index(max(values))] += 100 - sum(values)
+
+    return {
+        "position": position, "action": action,
+        "scores": dict(zip(names, values)),
+        "reason": "分數為依市場總分轉換的相對支持度，不代表獲利機率或保證報酬",
+    }
+
+
+def format_market_analysis(data: dict, position: str | None = None) -> dict:
     """回傳 LINE Flex Message 卡片；五大面向固定使用同一張三欄橫向表格。"""
     score = data["score"]
     symbol = data["symbol"]
@@ -127,6 +193,7 @@ def format_market_analysis(data: dict) -> dict:
     total = "資料不足" if score.get("score") is None else f'{score["score"]:.1f}/100'
     completeness = f'{score["data_completeness"]:.0f}%'
     applicable_weight = f'{score.get("applicable_weight", 100):.0f}%'
+    recommendation = recommendation_for_position(score, position) if position in ("held", "unheld") else None
     stale = bool(data.get("stale"))
 
     labels = {
@@ -157,6 +224,24 @@ def format_market_analysis(data: dict) -> dict:
 
     body = [
         _text_component(f"總分：{total}　訊號：{signal}", "lg", "#C0392B" if signal in ("偏空", "強勢偏空") else "#2C3E50", "bold"),
+        *(
+            [
+                _section_title("操作建議評分｜已經持有"),
+                _text_component("主要判斷： " + recommendation["action"], "md", "#2C3E50", "bold"),
+                _recommendation_score_component(recommendation["scores"]),
+                _text_component(recommendation["reason"], "xs", "#777777"),
+            ] if recommendation and recommendation["position"] == "held" and recommendation["scores"] else
+            [
+                _section_title("操作建議評分｜尚未持有"),
+                _text_component("主要判斷： " + recommendation["action"], "md", "#2C3E50", "bold"),
+                *[_text_component(f"{name}：{value} 分", "sm") for name, value in recommendation["scores"].items()],
+                _text_component(recommendation["reason"], "xs", "#777777"),
+            ] if recommendation and recommendation["scores"] else
+            ([
+                _section_title("操作建議評分"),
+                _text_component(recommendation["action"] + "：" + recommendation["reason"], "sm", "#B9770E"),
+            ] if recommendation else [])
+        ),
         _text_component(
             f"資料覆蓋率：{completeness}（排除不適用項目；適用權重 {applicable_weight}）",
             "xs", "#777777"
@@ -256,6 +341,16 @@ def format_market_analysis(data: dict) -> dict:
         f"📊 川投顧市場訊號分析｜{symbol}",
         f"市場：{market_name}｜資料日期：{data.get('as_of', '未提供')}",
         f"總分：{total}｜訊號：{signal}",
+        *(
+            [f"操作建議（已經持有）：{recommendation['action']}"] +
+            ["｜".join(f"{name}：{value} 分" for name, value in recommendation["scores"].items())] +
+            [recommendation["reason"]]
+            if recommendation and recommendation["position"] == "held" else
+            [f"操作建議（尚未持有）：{recommendation['action']}"] +
+            [f"{name}：{value} 分" for name, value in recommendation["scores"].items()] +
+            [recommendation["reason"]]
+            if recommendation else []
+        ),
         f"資料覆蓋率：{completeness}（排除不適用項目；適用權重 {applicable_weight}）",
         "分析項目｜分數｜分析結果",
     ]
