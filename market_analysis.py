@@ -58,7 +58,7 @@ def run_market_analysis(user_symbol: str) -> dict:
         }
 
     benchmarks = fetch_benchmarks(market)
-    news_items = fetch_symbol_news(user_symbol) + fetch_macro_news()
+    news_items = fetch_symbol_news(user_symbol, market=market) + fetch_macro_news()
     score = calculate_market_score(technical, fundamental, chips, benchmarks, news_items, market_type=market)
     payload = {
         "symbol": user_symbol.upper(), "resolved_symbol": ticker, "market": market,
