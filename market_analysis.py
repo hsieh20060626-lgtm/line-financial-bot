@@ -111,6 +111,25 @@ def _table_row(item: str, score: str, explanation: str, header: bool = False) ->
     }
 
 
+def _recommendation_score_component(scores: dict) -> dict:
+    """將三種操作方向的相對支持度並排顯示。"""
+    columns = []
+    for name, value in scores.items():
+        columns.append({
+            "type": "box", "layout": "vertical", "flex": 1,
+            "backgroundColor": "#F3F6F8", "cornerRadius": "md",
+            "paddingAll": "sm", "spacing": "xs",
+            "contents": [
+                _text_component(name, "xs", "#566573", "bold", align="center"),
+                _text_component(f"{value} 分", "md", "#1F618D", "bold", align="center"),
+            ],
+        })
+    return {
+        "type": "box", "layout": "horizontal", "spacing": "sm",
+        "contents": columns,
+    }
+
+
 def _section_title(text: str) -> dict:
     return {
         "type": "text", "text": text, "size": "md", "weight": "bold",
@@ -209,7 +228,7 @@ def format_market_analysis(data: dict, position: str | None = None) -> dict:
             [
                 _section_title("操作建議評分｜已經持有"),
                 _text_component("主要判斷： " + recommendation["action"], "md", "#2C3E50", "bold"),
-                *[_text_component(f"{name}：{value} 分", "sm") for name, value in recommendation["scores"].items()],
+                _recommendation_score_component(recommendation["scores"]),
                 _text_component(recommendation["reason"], "xs", "#777777"),
             ] if recommendation and recommendation["position"] == "held" and recommendation["scores"] else
             [
@@ -324,7 +343,7 @@ def format_market_analysis(data: dict, position: str | None = None) -> dict:
         f"總分：{total}｜訊號：{signal}",
         *(
             [f"操作建議（已經持有）：{recommendation['action']}"] +
-            [f"{name}：{value} 分" for name, value in recommendation["scores"].items()] +
+            ["｜".join(f"{name}：{value} 分" for name, value in recommendation["scores"].items())] +
             [recommendation["reason"]]
             if recommendation and recommendation["position"] == "held" else
             [f"操作建議（尚未持有）：{recommendation['action']}"] +
