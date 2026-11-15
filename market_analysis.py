@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import math
 from datetime import datetime, timezone
 
 from indicators import analyze_technical_indicators
@@ -58,7 +59,7 @@ def run_market_analysis(user_symbol: str) -> dict:
 
     benchmarks = fetch_benchmarks(market)
     news_items = fetch_symbol_news(user_symbol) + fetch_macro_news()
-    score = calculate_market_score(technical, fundamental, chips, benchmarks, news_items)
+    score = calculate_market_score(technical, fundamental, chips, benchmarks, news_items, market_type=market)
     payload = {
         "symbol": user_symbol.upper(), "resolved_symbol": ticker, "market": market,
         "as_of": market_data["as_of"], "source": market_data["source"],
@@ -69,7 +70,7 @@ def run_market_analysis(user_symbol: str) -> dict:
     payload["ai"] = explain_analysis(payload)
     payload["score"] = calculate_market_score(
         technical, fundamental, chips, benchmarks, news_items,
-        news_score=payload["ai"].get("news_score")
+        news_score=payload["ai"].get("news_score"), market_type=market
     )
     _CACHE[cache_key] = {"cached_at": datetime.now(timezone.utc), "payload": payload}
     return payload
@@ -138,49 +139,65 @@ def _section_title(text: str) -> dict:
 
 
 def recommendation_for_position(score: dict, position: str) -> dict:
-    """依總分與資料完整度，產生持有／未持有情境的相對支持度（非獲利機率）。"""
+    """以市場分數為證據基礎，輸出相對支持度；絕非獲利機率。"""
     total = score.get("score")
     completeness = float(score.get("data_completeness") or 0)
-    if total is None or completeness < 40:
+    if total is None or completeness < 50:
         return {
             "position": position, "action": "資料不足，暫不提供操作方向",
-            "scores": {}, "reason": "有效資料覆蓋率低於 40%，避免依不足資料給出操作方向",
+            "scores": {}, "reason": "有效資料覆蓋率低於 50%，避免依不足資料給出操作方向",
         }
 
     total = max(0.0, min(100.0, float(total)))
-    if position == "held":
-        names = ("加碼／買進", "持有", "減碼／賣出")
-        raw = [
-            max(total - 60.0, 0.0),
-            max(30.0 - abs(total - 50.0), 0.0),
-            max(45.0 - total, 0.0),
-        ]
-        action = "偏向加碼／買進" if total >= 65 else (
-            "偏向持有" if total >= 45 else "偏向減碼／賣出"
-        )
-    else:
-        names = ("買進", "等待觀望", "暫不買進")
-        raw = [
-            max(total - 40.0, 0.0),
-            max(30.0 - abs(total - 55.0), 0.0),
-            max(40.0 - total, 0.0),
-        ]
-        action = "偏向買進" if total >= 65 else (
-            "偏向等待觀望" if total >= 45 else "暫不建議進場"
-        )
+    dimensions = score.get("dimensions") or {}
+    technical = (dimensions.get("technical") or (None, []))[0]
+    market = (dimensions.get("market") or (None, []))[0]
+    chips = (dimensions.get("chips") or (None, []))[0]
+    news = (dimensions.get("news") or (None, []))[0]
+    adjusted = total
+    if technical is not None and technical < 40:
+        adjusted -= min(10.0, (40.0 - technical) * 0.35)
+    if market is not None and market < 35:
+        adjusted -= min(6.0, (35.0 - market) * 0.25)
+    if chips is not None and chips < 30:
+        adjusted -= 3.0
+    if news is not None and news < 30:
+        adjusted -= 2.0
+    adjusted = max(0.0, min(100.0, adjusted))
 
-    denominator = sum(raw)
-    if denominator <= 0:
-        values = [0, 100, 0]
-    else:
-        values = [round(value / denominator * 100) for value in raw]
-        # 修正四捨五入差額，確保三項合計 100。
-        values[values.index(max(values))] += 100 - sum(values)
+    # Softmax of distances from action-specific evidence anchors. Not probabilities.
+    centers = (70.0, 52.0, 32.0)
+    names = (("加碼／買進", "持有", "減碼／賣出") if position == "held"
+             else ("買進", "等待觀望", "暫不買進"))
+    temperature = 11.0
+    logits = [-(adjusted - center) ** 2 / (2 * temperature ** 2) for center in centers]
+    peak = max(logits)
+    exp_values = [math.exp(value - peak) for value in logits]
+    denominator = sum(exp_values)
+    values = [round(value / denominator * 100) for value in exp_values]
+    values[values.index(max(values))] += 100 - sum(values)
 
+    if adjusted >= 68:
+        action = "偏向加碼／買進" if position == "held" else "偏向分批買進"
+    elif adjusted >= 55:
+        action = "偏向持有" if position == "held" else "偏向等待回檔／確認"
+    elif adjusted >= 42:
+        action = "中性持有，等待確認" if position == "held" else "偏向等待觀望"
+    else:
+        action = "偏向減碼／風險控管" if position == "held" else "暫不建議進場"
+
+    reasons = [f"原始市場總分 {total:.1f}，風險調整後 {adjusted:.1f}"]
+    if technical is not None and technical < 40:
+        reasons.append("技術面偏弱，已降低積極操作支持度")
+    if market is not None and market < 35:
+        reasons.append("市場環境偏弱，已降低積極操作支持度")
+    if completeness < 70:
+        reasons.append("資料完整度未達 70%，建議降低部位與操作信心")
     return {
         "position": position, "action": action,
         "scores": dict(zip(names, values)),
-        "reason": "分數為依市場總分轉換的相對支持度，不代表獲利機率或保證報酬",
+        "adjusted_score": round(adjusted, 1),
+        "reason": "；".join(reasons) + "。三項分數為相對支持度，不代表獲利機率或保證報酬",
     }
 
 
@@ -254,7 +271,7 @@ def format_market_analysis(data: dict, position: str | None = None) -> dict:
         _text_component(f'日 K：{daily.get("trend", "未提供")}　｜　週 K：{weekly.get("trend", "未提供")}（週 K 最新一根可能尚未收完）', "sm"),
     ]
 
-    if fundamental.get("not_applicable"):
+    if fundamental.get("not_applicable") or fundamental.get("is_etf"):
         body += [
             _section_title("基本面"),
             _text_component(fundamental.get("reason", "標的不適用一般公司基本面指標。"), "sm"),

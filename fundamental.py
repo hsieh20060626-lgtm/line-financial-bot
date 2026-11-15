@@ -54,9 +54,25 @@ def fetch_fundamentals(symbol: str, market: str) -> dict[str, Any]:
         errors.append(f"公司資訊 API 失敗（{type(exc).__name__}）")
 
     if str(info.get("quoteType", "")).upper() == "ETF":
-        return {"available": False, "not_applicable": True,
-                "reason": "ETF 不適用一般公司 EPS／本益比評分",
-                "missing_fields": [], "source": "Yahoo Finance"}
+        def etf_number(*keys):
+            for key in keys:
+                value = _number(info.get(key))
+                if value is not None:
+                    return value
+            return None
+        price = etf_number("regularMarketPrice", "currentPrice")
+        nav = etf_number("navPrice")
+        premium = ((price / nav) - 1) * 100 if price is not None and nav and nav > 0 else None
+        return {
+            "available": True, "is_etf": True,
+            "annual_expense_ratio": etf_number("annualReportExpenseRatio"),
+            "total_assets": etf_number("totalAssets"),
+            "average_volume": etf_number("averageDailyVolume10Day", "averageVolume"),
+            "nav_price": nav, "market_price": price, "premium_discount_pct": premium,
+            "tracking_difference": None, "holdings_concentration": None,
+            "source": "Yahoo Finance ETF profile",
+            "reason": "使用可取得的 ETF 費用率、資產規模、成交量與 NAV 折溢價；追蹤差異及持股集中度未取得時不推估",
+        }
 
     def info_number(*keys):
         for key in keys:

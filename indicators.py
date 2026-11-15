@@ -161,8 +161,16 @@ def resample_weekly(data: pd.DataFrame) -> pd.DataFrame:
         "Low": "min",
         "Close": "last",
         "Volume": "sum",
-    })
-    return weekly.dropna(subset=["Close"])
+    }).dropna(subset=["Close"])
+
+    # Exclude the current partial week until Friday close. This is conservative
+    # around holiday-shortened weeks because no exchange calendar is available.
+    last_daily_date = pd.Timestamp(frame.index[-1]).date()
+    if last_daily_date.weekday() != 4 and not weekly.empty:
+        current_week_end = pd.Timestamp(frame.index[-1]).to_period("W-FRI").end_time.date()
+        if weekly.index[-1].date() == current_week_end:
+            weekly = weekly.iloc[:-1]
+    return weekly
 
 
 def calculate_weekly_indicators(data: pd.DataFrame) -> Dict[str, Any]:
