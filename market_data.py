@@ -68,7 +68,7 @@ def fetch_daily_history(symbol: str, period: str = "2y") -> dict[str, Any]:
 
 
 def fetch_benchmarks(market: str) -> dict[str, Any]:
-    symbols = ({"TAIEX": "^TWII", "TAIFEX": "TX=F", "SP500": "^GSPC", "NASDAQ": "^IXIC", "SOX": "^SOX", "VIX": "^VIX"}
+    symbols = ({"TAIEX": "^TWII", "SP500": "^GSPC", "NASDAQ": "^IXIC", "SOX": "^SOX", "VIX": "^VIX"}
                if market == "TW" else
                {"SP500": "^GSPC", "NASDAQ": "^IXIC", "SOX": "^SOX", "VIX": "^VIX"})
     result = {}
