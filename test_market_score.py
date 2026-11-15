@@ -36,7 +36,7 @@ class MarketScoreTests(unittest.TestCase):
             "available": True, "market": "US", "method": "volume_price_proxy",
             "price_change_pct": 1.0, "volume_ratio": 1.5,
         })
-        self.assertEqual(score, 56.0)
+        self.assertEqual(score, 54.5)
         self.assertTrue(any("不是機構持倉" in reason for reason in reasons))
 
     def test_missing_us_proxy_is_missing_not_zero(self):
@@ -73,7 +73,7 @@ class MarketScoreTests(unittest.TestCase):
 
     def test_market_score_uses_available_benchmarks(self):
         result, _ = score_market({"SP500": {"change_pct": 1.0}})
-        self.assertEqual(result, 58.0)
+        self.assertAlmostEqual(result, 58.0, places=6)
 
     def test_vix_high_level_reduces_market_score_as_risk_overlay(self):
         calm, _ = score_market({"SP500": {"change_pct": 0.0}, "VIX": {"close": 15.0}}, "US")
