@@ -177,16 +177,39 @@ def recommendation_for_position(score: dict, position: str) -> dict:
     values = [round(value / denominator * 100) for value in exp_values]
     values[values.index(max(values))] += 100 - sum(values)
 
-    if adjusted >= 68:
-        action = "偏向加碼／買進" if position == "held" else "偏向分批買進"
-    elif adjusted >= 55:
-        action = "偏向持有" if position == "held" else "偏向等待回檔／確認"
-    elif adjusted >= 42:
-        action = "中性持有，等待確認" if position == "held" else "偏向等待觀望"
+    # The displayed primary judgment must follow the highest relative-support
+    # score above. Do not apply a second, unrelated set of absolute score bands.
+    # A narrow lead is deliberately described as a neutral/weak lean.
+    ranked = sorted(zip(values, names), reverse=True)
+    lead = ranked[0][0] - ranked[1][0]
+    winning_name = ranked[0][1]
+    if position == "held":
+        direction_labels = {
+            "加碼／買進": "加碼／買進",
+            "持有": "持有",
+            "減碼／賣出": "減碼／賣出",
+        }
     else:
-        action = "偏向減碼／風險控管" if position == "held" else "暫不建議進場"
+        direction_labels = {
+            "買進": "買進",
+            "等待觀望": "等待觀望",
+            "暫不買進": "暫不買進",
+        }
+    direction = direction_labels[winning_name]
+    if lead < 8:
+        action = f"中性偏向{direction}"
+        strength = "方向接近"
+    elif lead < 20:
+        action = f"偏向{direction}"
+        strength = "方向略有優勢"
+    else:
+        action = f"較明確偏向{direction}"
+        strength = "方向優勢較明顯"
 
-    reasons = [f"原始市場總分 {total:.1f}，風險調整後 {adjusted:.1f}"]
+    reasons = [
+        f"原始市場總分 {total:.1f}，風險調整後 {adjusted:.1f}",
+        f"最高支持方向為「{direction}」，領先第二名 {lead} 分（{strength}）",
+    ]
     if technical is not None and technical < 40:
         reasons.append("技術面偏弱，已降低積極操作支持度")
     if market is not None and market < 35:
